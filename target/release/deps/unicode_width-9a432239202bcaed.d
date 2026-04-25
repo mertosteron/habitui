@@ -1,0 +1,8 @@
+/home/mert/Projects/Agents/target/release/deps/unicode_width-9a432239202bcaed.d: /home/mert/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-width-0.1.14/src/lib.rs /home/mert/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-width-0.1.14/src/tables.rs
+
+/home/mert/Projects/Agents/target/release/deps/libunicode_width-9a432239202bcaed.rlib: /home/mert/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-width-0.1.14/src/lib.rs /home/mert/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-width-0.1.14/src/tables.rs
+
+/home/mert/Projects/Agents/target/release/deps/libunicode_width-9a432239202bcaed.rmeta: /home/mert/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-width-0.1.14/src/lib.rs /home/mert/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-width-0.1.14/src/tables.rs
+
+/home/mert/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-width-0.1.14/src/lib.rs:
+/home/mert/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-width-0.1.14/src/tables.rs:
