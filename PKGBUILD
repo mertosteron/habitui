@@ -10,8 +10,8 @@ pkgdesc="Terminal UI habit tracker written in Rust"
 arch=('x86_64')
 url="https://example.invalid/habit-tracker"
 license=('MIT')
-depends=()
-makedepends=('cargo' 'rust')
+depends=('gcc-libs' 'glibc')
+makedepends=('cargo')
 source=()
 sha256sums=()
 

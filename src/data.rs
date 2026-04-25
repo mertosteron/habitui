@@ -81,6 +81,38 @@ impl HabitStore {
     pub fn habit_mut(&mut self, id: u64) -> Option<&mut Habit> {
         self.habits.iter_mut().find(|h| h.id == id)
     }
+
+    /// True iff the habit with `id` has a completion exactly on `date`.
+    /// Returns false if no habit with that id exists.
+    pub fn is_complete_on(&self, id: u64, date: NaiveDate) -> bool {
+        self.habit(id)
+            .map(|h| h.completions.contains(&date))
+            .unwrap_or(false)
+    }
+
+    /// Current streak for the habit with `id`, anchored at `today`.
+    /// Returns 0 if no habit with that id exists.
+    pub fn current_streak(&self, id: u64, today: NaiveDate) -> u32 {
+        self.habit(id).map(|h| h.current_streak(today)).unwrap_or(0)
+    }
+
+    /// Completion dates for the habit with `id` falling within `[from, to]`
+    /// (inclusive on both ends), in ascending order.
+    /// Returns an empty vec if no habit with that id exists or `from > to`.
+    pub fn completions_in_range(
+        &self,
+        id: u64,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> Vec<NaiveDate> {
+        let Some(habit) = self.habit(id) else {
+            return Vec::new();
+        };
+        if from > to {
+            return Vec::new();
+        }
+        habit.completions.range(from..=to).copied().collect()
+    }
 }
 
 impl Habit {

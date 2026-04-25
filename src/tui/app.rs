@@ -146,7 +146,7 @@ impl App {
 
     fn handle_list_key(&mut self, key: KeyEvent) -> Screen {
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
+            KeyCode::Char('q') => {
                 self.should_quit = true;
             }
             KeyCode::Char('j') | KeyCode::Down => {
@@ -170,7 +170,7 @@ impl App {
                     return Screen::ConfirmDelete { habit_id: id };
                 }
             }
-            KeyCode::Enter => {
+            KeyCode::Char('g') | KeyCode::Enter => {
                 if let Some(id) = self.current_habit_id() {
                     return Screen::Detail { habit_id: id };
                 }
@@ -240,7 +240,9 @@ impl App {
 
     fn handle_detail_key(&mut self, key: KeyEvent, habit_id: u64) -> Screen {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => Screen::List,
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter | KeyCode::Char('g') => {
+                Screen::List
+            }
             _ => Screen::Detail { habit_id },
         }
     }
@@ -281,13 +283,29 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         if self.active {
-            let _ = execute!(io::stdout(), LeaveAlternateScreen);
-            let _ = disable_raw_mode();
+            restore_terminal();
         }
     }
 }
 
+fn restore_terminal() {
+    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    let _ = disable_raw_mode();
+}
+
+/// Install a panic hook that restores the terminal before printing the panic.
+/// Without this, a panic mid-render leaves the user's shell in raw mode on
+/// the alt screen and the backtrace is invisible.
+fn install_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        prev(info);
+    }));
+}
+
 pub fn run_app(store: &mut HabitStore) -> io::Result<()> {
+    install_panic_hook();
     let _guard = TerminalGuard::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal: Terminal<CrosstermBackend<Stdout>> = Terminal::new(backend)?;

@@ -41,6 +41,21 @@ fn remove_habit_returns_true_on_hit_false_on_miss() {
 }
 
 #[test]
+fn remove_habit_only_removes_the_targeted_habit() {
+    let mut store = HabitStore::new();
+    let today = d(2026, 4, 25);
+    let id_a = store.add_habit("Read".into(), Frequency::Daily, today);
+    let id_b = store.add_habit("Run".into(), Frequency::Weekly, today);
+    let id_c = store.add_habit("Stretch".into(), Frequency::EveryNDays(3), today);
+
+    assert!(store.remove_habit(id_b));
+    assert_eq!(store.habits.len(), 2);
+    assert!(store.habit(id_a).is_some(), "untouched habit must remain");
+    assert!(store.habit(id_c).is_some(), "untouched habit must remain");
+    assert!(store.habit(id_b).is_none(), "targeted habit must be gone");
+}
+
+#[test]
 fn toggle_completion_is_idempotent() {
     let mut store = HabitStore::new();
     let today = d(2026, 4, 25);
@@ -53,6 +68,21 @@ fn toggle_completion_is_idempotent() {
     assert!(!store.habit(id).unwrap().completions.contains(&today));
 
     assert_eq!(store.toggle_completion(9999, today), None);
+}
+
+#[test]
+fn completions_on_distinct_dates_accumulate() {
+    let mut store = HabitStore::new();
+    let id = store.add_habit("Read".into(), Frequency::Daily, d(2026, 4, 1));
+    let dates = [d(2026, 4, 1), d(2026, 4, 2), d(2026, 4, 5), d(2026, 4, 10)];
+    for date in dates {
+        assert_eq!(store.toggle_completion(id, date), Some(true));
+    }
+    let h = store.habit(id).unwrap();
+    assert_eq!(h.completions.len(), dates.len());
+    for date in dates {
+        assert!(h.completions.contains(&date), "missing {date}");
+    }
 }
 
 #[test]
@@ -137,6 +167,28 @@ fn current_streak_breaks_on_gap() {
         store.toggle_completion(id, d(2026, 4, day));
     }
     assert_eq!(store.habit(id).unwrap().current_streak(today), 2);
+}
+
+#[test]
+fn current_streak_zero_when_today_missed() {
+    let mut store = HabitStore::new();
+    let today = d(2026, 4, 25);
+    let id = store.add_habit("Read".into(), Frequency::Daily, d(2026, 4, 20));
+    // Completed yesterday and the day before, but not today.
+    store.toggle_completion(id, d(2026, 4, 23));
+    store.toggle_completion(id, d(2026, 4, 24));
+    assert_eq!(store.habit(id).unwrap().current_streak(today), 0);
+}
+
+#[test]
+fn longest_streak_tracks_best_run() {
+    let mut store = HabitStore::new();
+    let id = store.add_habit("Read".into(), Frequency::Daily, d(2026, 4, 1));
+    // Two runs: 4/1..4/3 (len 3) then gap, then 4/5..4/8 (len 4).
+    for day in [1u32, 2, 3, 5, 6, 7, 8] {
+        store.toggle_completion(id, d(2026, 4, day));
+    }
+    assert_eq!(store.habit(id).unwrap().longest_streak(), 4);
 }
 
 #[test]

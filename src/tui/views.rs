@@ -106,7 +106,7 @@ fn render_list(f: &mut Frame, app: &mut App) {
 
     let status = match &app.status {
         Some(msg) => msg.clone(),
-        None => "j/k move  space toggle  a add  d delete  enter detail  q quit".to_string(),
+        None => "j/k move  space toggle  a add  d delete  g graph  q quit".to_string(),
     };
     let footer = Paragraph::new(Span::styled(
         status,
@@ -377,7 +377,7 @@ fn render_detail(f: &mut Frame, app: &App, habit_id: u64) {
 
     f.render_widget(
         Paragraph::new(Span::styled(
-            "q/Esc/Enter to return to list",
+            "Esc/q/Enter to return to list",
             Style::default().fg(Color::DarkGray),
         )),
         chunks[3],
