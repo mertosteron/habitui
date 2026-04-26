@@ -19,7 +19,7 @@ pub const STORE_VERSION: u32 = 2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Frequency {
     Daily,
-    Weekly,
+    Weekly,  // Delete this, NTimesPerWeek enough
     EveryNDays(u32),
     NTimesPerWeek(u32),
 }
