@@ -9,7 +9,6 @@ pub const STORE_VERSION: u32 = 2;
 ///
 /// Semantics:
 /// - `Daily`: one completion required each calendar day.
-/// - `Weekly`: one completion required within any rolling 7-day window.
 /// - `EveryNDays(n)`: one completion required within any rolling n-day window.
 /// - `NTimesPerWeek(n)`: at least n completions required within an ISO week
 ///   (Mon..Sun, the same week as the reference date). The current week is
@@ -17,11 +16,33 @@ pub const STORE_VERSION: u32 = 2;
 ///   week. Streaks count complete past weeks plus the current week if it has
 ///   already met the quota.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "FrequencyShim")]
 pub enum Frequency {
     Daily,
-    Weekly,  // Delete this, NTimesPerWeek enough
     EveryNDays(u32),
     NTimesPerWeek(u32),
+}
+
+/// Deserialization shim that accepts the legacy `Weekly` variant from v1
+/// stores and rewrites it as `NTimesPerWeek(1)`. This keeps existing on-disk
+/// data loadable after `Weekly` was removed from the data model.
+#[derive(Deserialize)]
+enum FrequencyShim {
+    Daily,
+    Weekly,
+    EveryNDays(u32),
+    NTimesPerWeek(u32),
+}
+
+impl From<FrequencyShim> for Frequency {
+    fn from(v: FrequencyShim) -> Self {
+        match v {
+            FrequencyShim::Daily => Frequency::Daily,
+            FrequencyShim::Weekly => Frequency::NTimesPerWeek(1),
+            FrequencyShim::EveryNDays(n) => Frequency::EveryNDays(n),
+            FrequencyShim::NTimesPerWeek(n) => Frequency::NTimesPerWeek(n),
+        }
+    }
 }
 
 /// Whether a habit is something you are trying to build (do regularly) or
@@ -266,7 +287,6 @@ impl Habit {
     fn period_days(&self) -> u32 {
         match self.frequency {
             Frequency::Daily => 1,
-            Frequency::Weekly => 7,
             Frequency::EveryNDays(n) => n.max(1),
             Frequency::NTimesPerWeek(_) => 7,
         }
@@ -275,7 +295,6 @@ impl Habit {
     /// True if the habit still needs action for the period anchored at `date`.
     ///
     /// - Build / Daily: no completion exactly on `date`.
-    /// - Build / Weekly: no completion in the rolling 7-day window ending on `date`.
     /// - Build / EveryNDays(n): no completion in the rolling n-day window ending on `date`.
     /// - Build / NTimesPerWeek(n): fewer than n completions in the ISO week
     ///   (Mon..Sun) containing `date`.
@@ -287,7 +306,7 @@ impl Habit {
         }
         match self.frequency {
             Frequency::Daily => !self.completions.contains(&date),
-            Frequency::Weekly | Frequency::EveryNDays(_) => {
+            Frequency::EveryNDays(_) => {
                 let period = self.period_days() as i64;
                 let window_start = date - Duration::days(period - 1);
                 self.completions.range(window_start..=date).next().is_none()
@@ -312,7 +331,7 @@ impl Habit {
     ///   there are no such failures). On the day of a failure the streak is
     ///   0; the next day it is 1. Before `created_at` it is 0.
     /// - Build / Daily: consecutive completed days ending today.
-    /// - Build / Weekly | EveryNDays(n): consecutive rolling n-day windows
+    /// - Build / EveryNDays(n): consecutive rolling n-day windows
     ///   ending today, today-n, today-2n, ... that each contain ≥1 completion.
     /// - Build / NTimesPerWeek(n): consecutive past ISO weeks (each with ≥n
     ///   completions) ending at the current ISO week, plus 1 if the current
@@ -395,7 +414,7 @@ impl Habit {
     /// run between failures).
     ///
     /// - Build / Daily: longest run of consecutive completed days.
-    /// - Build / Weekly | EveryNDays(n): periods are anchored to the earliest
+    /// - Build / EveryNDays(n): periods are anchored to the earliest
     ///   completion (period_0 = [first, first + n - 1]); a hit period has
     ///   ≥1 completion. Result is the longest run of consecutive hit periods.
     /// - Build / NTimesPerWeek(n): longest run of consecutive ISO weeks

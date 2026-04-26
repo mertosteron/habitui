@@ -1,6 +1,6 @@
 use std::io::{self, Stdout};
 
-use chrono::{Local, NaiveDate};
+use chrono::{Duration, Local, NaiveDate};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -20,8 +20,27 @@ pub enum Screen {
     List,
     AddHabit(AddForm),
     EditHabit(EditForm),
-    Detail { habit_id: u64 },
+    Detail(DetailState),
+    GlobalHeatmap,
     ConfirmDelete { habit_id: u64 },
+}
+
+/// Per-habit detail-view state. `edit_mode` toggles the inline cell editor;
+/// `cursor` is the selected calendar day when editing.
+pub struct DetailState {
+    pub habit_id: u64,
+    pub edit_mode: bool,
+    pub cursor: NaiveDate,
+}
+
+impl DetailState {
+    pub fn new(habit_id: u64, today: NaiveDate) -> Self {
+        Self {
+            habit_id,
+            edit_mode: false,
+            cursor: today,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -35,7 +54,6 @@ pub enum FormField {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FrequencyChoice {
     Daily,
-    Weekly,
     EveryNDays,
     NTimesPerWeek,
 }
@@ -57,7 +75,6 @@ impl FrequencyChoice {
     pub fn from_frequency(f: Frequency) -> Self {
         match f {
             Frequency::Daily => FrequencyChoice::Daily,
-            Frequency::Weekly => FrequencyChoice::Weekly,
             Frequency::EveryNDays(_) => FrequencyChoice::EveryNDays,
             Frequency::NTimesPerWeek(_) => FrequencyChoice::NTimesPerWeek,
         }
@@ -80,6 +97,7 @@ pub struct EditForm {
     pub freq_choice: FrequencyChoice,
     pub numeric_buf: String,
     pub kind_label: &'static str,
+    pub is_quit: bool,
     pub error: Option<String>,
 }
 
@@ -96,9 +114,16 @@ impl AddForm {
     }
 
     pub fn cycle_field_forward(&mut self) {
+        let is_quit = matches!(self.kind_choice, KindChoice::Quit);
         self.field = match self.field {
             FormField::Name => FormField::Kind,
-            FormField::Kind => FormField::Frequency,
+            FormField::Kind => {
+                if is_quit {
+                    FormField::Name
+                } else {
+                    FormField::Frequency
+                }
+            }
             FormField::Frequency => {
                 if self.freq_choice.needs_numeric() {
                     FormField::NumericValue
@@ -115,6 +140,13 @@ impl AddForm {
             KindChoice::Build => KindChoice::Quit,
             KindChoice::Quit => KindChoice::Build,
         };
+        if matches!(self.kind_choice, KindChoice::Quit) {
+            // Quit habits are tracked daily; force the choice and clear stale focus.
+            self.freq_choice = FrequencyChoice::Daily;
+            if matches!(self.field, FormField::Frequency | FormField::NumericValue) {
+                self.field = FormField::Kind;
+            }
+        }
     }
 
     pub fn cycle_freq_forward(&mut self) {
@@ -126,6 +158,9 @@ impl AddForm {
     }
 
     pub fn parse_frequency(&self) -> Result<Frequency, String> {
+        if matches!(self.kind_choice, KindChoice::Quit) {
+            return Ok(Frequency::Daily);
+        }
         parse_frequency_from(self.freq_choice, &self.numeric_buf)
     }
 
@@ -141,15 +176,19 @@ impl AddForm {
 
 impl EditForm {
     pub fn from_habit(id: u64, name: &str, freq: Frequency, kind: &HabitKind) -> Self {
-        let freq_choice = FrequencyChoice::from_frequency(freq);
+        let is_quit = matches!(kind, HabitKind::Quit { .. });
+        // Quit habits ignore frequency in their behavior; pin the picker to Daily
+        // so the user can't see or change it. Build habits keep their stored value.
+        let freq_choice = if is_quit {
+            FrequencyChoice::Daily
+        } else {
+            FrequencyChoice::from_frequency(freq)
+        };
         let numeric_buf = match freq {
-            Frequency::EveryNDays(n) | Frequency::NTimesPerWeek(n) => n.to_string(),
+            Frequency::EveryNDays(n) | Frequency::NTimesPerWeek(n) if !is_quit => n.to_string(),
             _ => String::new(),
         };
-        let kind_label = match kind {
-            HabitKind::Build => "Build habit",
-            HabitKind::Quit { .. } => "Quit habit",
-        };
+        let kind_label = if is_quit { "Quit habit" } else { "Build habit" };
         Self {
             habit_id: id,
             name: name.to_string(),
@@ -157,11 +196,17 @@ impl EditForm {
             freq_choice,
             numeric_buf,
             kind_label,
+            is_quit,
             error: None,
         }
     }
 
     pub fn cycle_field_forward(&mut self) {
+        if self.is_quit {
+            // Only the name field is editable for Quit habits.
+            self.field = FormField::Name;
+            return;
+        }
         self.field = match self.field {
             FormField::Name => FormField::Frequency,
             FormField::Kind | FormField::Frequency => {
@@ -184,6 +229,9 @@ impl EditForm {
     }
 
     pub fn parse_frequency(&self) -> Result<Frequency, String> {
+        if self.is_quit {
+            return Ok(Frequency::Daily);
+        }
         parse_frequency_from(self.freq_choice, &self.numeric_buf)
     }
 }
@@ -191,13 +239,11 @@ impl EditForm {
 fn cycle_freq(c: FrequencyChoice, forward: bool) -> FrequencyChoice {
     use FrequencyChoice::*;
     match (c, forward) {
-        (Daily, true) => Weekly,
-        (Weekly, true) => EveryNDays,
+        (Daily, true) => EveryNDays,
         (EveryNDays, true) => NTimesPerWeek,
         (NTimesPerWeek, true) => Daily,
         (Daily, false) => NTimesPerWeek,
-        (Weekly, false) => Daily,
-        (EveryNDays, false) => Weekly,
+        (EveryNDays, false) => Daily,
         (NTimesPerWeek, false) => EveryNDays,
     }
 }
@@ -205,7 +251,6 @@ fn cycle_freq(c: FrequencyChoice, forward: bool) -> FrequencyChoice {
 fn parse_frequency_from(choice: FrequencyChoice, buf: &str) -> Result<Frequency, String> {
     match choice {
         FrequencyChoice::Daily => Ok(Frequency::Daily),
-        FrequencyChoice::Weekly => Ok(Frequency::Weekly),
         FrequencyChoice::EveryNDays => parse_positive_n(buf, "Every-N-days").map(Frequency::EveryNDays),
         FrequencyChoice::NTimesPerWeek => {
             let n = parse_positive_n(buf, "Times-per-week")?;
@@ -276,7 +321,8 @@ impl App {
             Screen::List => self.handle_list_key(key),
             Screen::AddHabit(form) => self.handle_add_key(key, form),
             Screen::EditHabit(form) => self.handle_edit_key(key, form),
-            Screen::Detail { habit_id } => self.handle_detail_key(key, habit_id),
+            Screen::Detail(state) => self.handle_detail_key(key, state),
+            Screen::GlobalHeatmap => self.handle_global_heatmap_key(key),
             Screen::ConfirmDelete { habit_id } => self.handle_confirm_key(key, habit_id),
         };
     }
@@ -336,10 +382,13 @@ impl App {
                     return Screen::ConfirmDelete { habit_id: id };
                 }
             }
-            KeyCode::Char('g') | KeyCode::Enter => {
+            KeyCode::Enter => {
                 if let Some(id) = self.current_habit_id() {
-                    return Screen::Detail { habit_id: id };
+                    return Screen::Detail(DetailState::new(id, self.today));
                 }
+            }
+            KeyCode::Char('g') | KeyCode::Char('G') => {
+                return Screen::GlobalHeatmap;
             }
             _ => {}
         }
@@ -486,12 +535,86 @@ impl App {
         Screen::EditHabit(form)
     }
 
-    fn handle_detail_key(&mut self, key: KeyEvent, habit_id: u64) -> Screen {
+    fn handle_detail_key(&mut self, key: KeyEvent, mut state: DetailState) -> Screen {
+        let habit_id = state.habit_id;
+        if state.edit_mode {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('e') | KeyCode::Char('E') => {
+                    state.edit_mode = false;
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    state.cursor = state.cursor - Duration::days(1);
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    let next = state.cursor + Duration::days(1);
+                    if next <= self.today {
+                        state.cursor = next;
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    state.cursor = state.cursor - Duration::days(7);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let next = state.cursor + Duration::days(7);
+                    if next <= self.today {
+                        state.cursor = next;
+                    }
+                }
+                KeyCode::Char(' ') | KeyCode::Enter => {
+                    self.toggle_on_date(habit_id, state.cursor);
+                }
+                _ => {}
+            }
+            return Screen::Detail(state);
+        }
+
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter | KeyCode::Char('g') => {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => Screen::List,
+            KeyCode::Char('e') | KeyCode::Char('E') => {
+                state.edit_mode = true;
+                state.cursor = self.today;
+                self.status = Some(
+                    "Edit mode: ←↑↓→ to move · space toggles · e or esc to exit.".to_string(),
+                );
+                Screen::Detail(state)
+            }
+            _ => Screen::Detail(state),
+        }
+    }
+
+    fn toggle_on_date(&mut self, habit_id: u64, date: NaiveDate) {
+        let Some(habit) = self.store.habit(habit_id) else {
+            return;
+        };
+        if date < habit.created_at {
+            self.status = Some("Cannot edit dates before the habit was created.".to_string());
+            return;
+        }
+        let kind_is_quit = matches!(habit.kind, HabitKind::Quit { .. });
+        if kind_is_quit {
+            let already = self.store.is_complete_on(habit_id, date);
+            if already {
+                let _ = self.store.clear_failure(habit_id, date);
+                self.status = Some(format!("Cleared failure on {}.", date));
+            } else {
+                let _ = self.store.log_failure(habit_id, date);
+                self.status = Some(format!("Logged failure on {}.", date));
+            }
+        } else {
+            match self.store.toggle_completion(habit_id, date) {
+                Some(true) => self.status = Some(format!("Marked {} complete.", date)),
+                Some(false) => self.status = Some(format!("Cleared completion on {}.", date)),
+                None => {}
+            }
+        }
+    }
+
+    fn handle_global_heatmap_key(&mut self, key: KeyEvent) -> Screen {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('g') | KeyCode::Enter => {
                 Screen::List
             }
-            _ => Screen::Detail { habit_id },
+            _ => Screen::GlobalHeatmap,
         }
     }
 

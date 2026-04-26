@@ -1,16 +1,20 @@
+use std::collections::BTreeMap;
+
 use chrono::{Datelike, Duration, NaiveDate};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Sparkline, Wrap,
+};
 use ratatui::Frame;
 
-use crate::data::{Frequency, Habit, HabitKind};
+use crate::data::{Frequency, Habit, HabitKind, HabitStore};
 use crate::tui::app::{
-    AddForm, App, EditForm, FormField, FrequencyChoice, KindChoice, Screen,
+    AddForm, App, DetailState, EditForm, FormField, FrequencyChoice, KindChoice, Screen,
 };
 
-const HEATMAP_WEEKS: i64 = 13;
 const CELL: &str = "\u{2588}\u{2588}"; // "██"
 const CELL_HALF: &str = "\u{2592}\u{2592}"; // shaded block, used for "logged failure"
 
@@ -38,10 +42,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 render_edit_form(f, form);
             }
         }
-        Screen::Detail { habit_id } => {
-            let id = *habit_id;
-            render_detail(f, app, id);
+        Screen::Detail(state) => {
+            render_detail(f, app, state);
         }
+        Screen::GlobalHeatmap => render_global_heatmap(f, app),
         Screen::ConfirmDelete { habit_id } => {
             let id = *habit_id;
             render_list(f, app);
@@ -78,21 +82,25 @@ fn render_list(f: &mut Frame, app: &mut App) {
 
     let title = Paragraph::new(Line::from(vec![
         Span::styled(
-            "habitui",
-            Style::default()
-                .fg(COL_HEADER)
-                .add_modifier(Modifier::BOLD),
+            "✦ ",
+            Style::default().fg(COL_ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "  ·  ",
-            Style::default().fg(COL_DIM),
+            "habitui",
+            Style::default()
+                .fg(COL_ACCENT)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        ),
+        Span::styled(
+            "   ",
+            Style::default(),
         ),
         Span::styled(
             format!("{}", app.today.format("%a %Y-%m-%d")),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(COL_HEADER),
         ),
         Span::styled(
-            format!("  ·  {} habit{}", app.store.habits.len(),
+            format!("   ·   {} habit{}", app.store.habits.len(),
                 if app.store.habits.len() == 1 { "" } else { "s" }),
             Style::default().fg(Color::DarkGray),
         ),
@@ -282,7 +290,6 @@ fn pad(s: &str, width: usize) -> String {
 fn format_frequency(f: Frequency) -> String {
     match f {
         Frequency::Daily => "Daily".to_string(),
-        Frequency::Weekly => "Weekly".to_string(),
         Frequency::EveryNDays(n) => format!("Every {} days", n),
         Frequency::NTimesPerWeek(n) => format!("{}× per week", n),
     }
@@ -312,7 +319,9 @@ fn render_footer<'a>(quit_habit_selected: bool) -> Paragraph<'a> {
     let mut spans: Vec<Span> = Vec::new();
     extend_spans(&mut spans, keybinding("j/k", "move", COL_NAV));
     spans.push(sep.clone());
-    extend_spans(&mut spans, keybinding("⏎", "graph", COL_NAV));
+    extend_spans(&mut spans, keybinding("⏎", "detail", COL_NAV));
+    spans.push(sep.clone());
+    extend_spans(&mut spans, keybinding("g", "global", COL_NAV));
     spans.push(sep.clone());
     extend_spans(&mut spans, toggle);
     spans.push(sep.clone());
@@ -347,7 +356,14 @@ fn keybinding<'a>(key: &str, label: &str, color: Color) -> Vec<Span<'a>> {
 // ---------- Add form ----------
 
 fn render_add_form(f: &mut Frame, form: &AddForm) {
-    let height = if form.freq_choice.needs_numeric() { 17 } else { 15 };
+    let is_quit = matches!(form.kind_choice, KindChoice::Quit);
+    let height = if is_quit {
+        12
+    } else if form.freq_choice.needs_numeric() {
+        17
+    } else {
+        15
+    };
     let area = centered_rect(64, height, f.area());
     f.render_widget(Clear, area);
 
@@ -361,6 +377,31 @@ fn render_add_form(f: &mut Frame, form: &AddForm) {
         ));
     let inner = block.inner(area);
     f.render_widget(block, area);
+
+    if is_quit {
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // name label
+                Constraint::Length(1), // name input
+                Constraint::Length(1), // gap
+                Constraint::Length(1), // kind label
+                Constraint::Length(1), // kind picker
+                Constraint::Length(1), // gap
+                Constraint::Length(1), // implicit-daily note
+                Constraint::Length(1), // gap
+                Constraint::Min(1),    // help / error
+            ])
+            .split(inner);
+
+        f.render_widget(field_label("Name", form.field == FormField::Name), layout[0]);
+        f.render_widget(name_paragraph(&form.name, form.field == FormField::Name), layout[1]);
+        f.render_widget(field_label("Type", form.field == FormField::Kind), layout[3]);
+        f.render_widget(kind_picker(form.kind_choice), layout[4]);
+        f.render_widget(quit_implicit_daily_note(), layout[6]);
+        f.render_widget(form_help(form.error.as_deref(), "Tab to switch · Enter to save · Esc to cancel"), layout[8]);
+        return;
+    }
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -398,10 +439,28 @@ fn render_add_form(f: &mut Frame, form: &AddForm) {
     f.render_widget(form_help(form.error.as_deref(), "Tab to switch · Enter to save · Esc to cancel"), layout[10]);
 }
 
+fn quit_implicit_daily_note<'a>() -> Paragraph<'a> {
+    Paragraph::new(Line::from(vec![
+        Span::styled("  Frequency: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            "Daily (implicit for Quit habits)",
+            Style::default()
+                .fg(Color::Rgb(180, 180, 195))
+                .add_modifier(Modifier::ITALIC),
+        ),
+    ]))
+}
+
 // ---------- Edit form ----------
 
 fn render_edit_form(f: &mut Frame, form: &EditForm) {
-    let height = if form.freq_choice.needs_numeric() { 17 } else { 15 };
+    let height = if form.is_quit {
+        12
+    } else if form.freq_choice.needs_numeric() {
+        17
+    } else {
+        15
+    };
     let area = centered_rect(64, height, f.area());
     f.render_widget(Clear, area);
 
@@ -415,6 +474,40 @@ fn render_edit_form(f: &mut Frame, form: &EditForm) {
         ));
     let inner = block.inner(area);
     f.render_widget(block, area);
+
+    if form.is_quit {
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // name label
+                Constraint::Length(1), // name input
+                Constraint::Length(1), // gap
+                Constraint::Length(1), // kind (read-only)
+                Constraint::Length(1), // kind value
+                Constraint::Length(1), // gap
+                Constraint::Length(1), // implicit-daily note
+                Constraint::Length(1), // gap
+                Constraint::Min(1),    // help / error
+            ])
+            .split(inner);
+
+        f.render_widget(field_label("Name", form.field == FormField::Name), layout[0]);
+        f.render_widget(name_paragraph(&form.name, form.field == FormField::Name), layout[1]);
+        f.render_widget(field_label("Type (read-only)", false), layout[3]);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    form.kind_label,
+                    Style::default().fg(Color::Rgb(180, 180, 195)).add_modifier(Modifier::ITALIC),
+                ),
+            ])),
+            layout[4],
+        );
+        f.render_widget(quit_implicit_daily_note(), layout[6]);
+        f.render_widget(form_help(form.error.as_deref(), "Enter to save · Esc to cancel"), layout[8]);
+        return;
+    }
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -508,7 +601,6 @@ fn kind_picker<'a>(choice: KindChoice) -> Paragraph<'a> {
 fn freq_picker<'a>(choice: FrequencyChoice) -> Paragraph<'a> {
     let options = [
         (FrequencyChoice::Daily, "[Daily]"),
-        (FrequencyChoice::Weekly, "[Weekly]"),
         (FrequencyChoice::EveryNDays, "[Every N days]"),
         (FrequencyChoice::NTimesPerWeek, "[N× / week]"),
     ];
@@ -617,11 +709,11 @@ fn render_confirm_delete(f: &mut Frame, app: &App, habit_id: u64) {
     f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
 }
 
-// ---------- Detail / heatmap ----------
+// ---------- Detail / binary chart ----------
 
-fn render_detail(f: &mut Frame, app: &App, habit_id: u64) {
+fn render_detail(f: &mut Frame, app: &App, state: &DetailState) {
     let area = f.area();
-    let habit = match app.store.habit(habit_id) {
+    let habit = match app.store.habit(state.habit_id) {
         Some(h) => h,
         None => {
             f.render_widget(
@@ -637,23 +729,246 @@ fn render_detail(f: &mut Frame, app: &App, habit_id: u64) {
         .constraints([
             Constraint::Length(3), // header card
             Constraint::Length(2), // affirmation
-            Constraint::Min(10),   // heatmap
+            Constraint::Length(5), // sparkline strip (last 30 days)
+            Constraint::Min(10),   // binary calendar
+            Constraint::Length(1), // status
             Constraint::Length(1), // footer
         ])
         .split(area);
 
     render_detail_header(f, habit, app.today, chunks[0]);
     render_motivation_line(f, habit, app.today, chunks[1]);
-    render_heatmap(f, habit, app.today, chunks[2]);
+    render_recent_strip(f, habit, app.today, chunks[2]);
+    render_binary_calendar(f, habit, app.today, state, chunks[3]);
 
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled("[esc/q] ", Style::default().fg(COL_NAV).add_modifier(Modifier::BOLD)),
-        Span::styled("back to list", Style::default().fg(Color::Rgb(180, 180, 195))),
-        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
-        Span::styled("[e] ", Style::default().fg(COL_MUT).add_modifier(Modifier::BOLD)),
-        Span::styled("edit (from list)", Style::default().fg(Color::Rgb(180, 180, 195))),
-    ]));
-    f.render_widget(footer, chunks[3]);
+    let status_line = match &app.status {
+        Some(msg) => Line::from(Span::styled(
+            format!("  {}", msg),
+            Style::default().fg(COL_ACCENT),
+        )),
+        None => Line::from(""),
+    };
+    f.render_widget(Paragraph::new(status_line), chunks[4]);
+
+    let footer = if state.edit_mode {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "  EDIT ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(COL_ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled("[←↑↓→] ", Style::default().fg(COL_NAV).add_modifier(Modifier::BOLD)),
+            Span::styled("move", Style::default().fg(Color::Rgb(180, 180, 195))),
+            Span::styled("   ·   ", Style::default().fg(COL_DIM)),
+            Span::styled("[space] ", Style::default().fg(COL_MUT).add_modifier(Modifier::BOLD)),
+            Span::styled("toggle", Style::default().fg(Color::Rgb(180, 180, 195))),
+            Span::styled("   ·   ", Style::default().fg(COL_DIM)),
+            Span::styled("[e/esc] ", Style::default().fg(COL_DANGER).add_modifier(Modifier::BOLD)),
+            Span::styled("exit edit", Style::default().fg(Color::Rgb(180, 180, 195))),
+        ]))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled("  [esc/q/⏎] ", Style::default().fg(COL_NAV).add_modifier(Modifier::BOLD)),
+            Span::styled("back", Style::default().fg(Color::Rgb(180, 180, 195))),
+            Span::styled("   ·   ", Style::default().fg(COL_DIM)),
+            Span::styled("[e] ", Style::default().fg(COL_MUT).add_modifier(Modifier::BOLD)),
+            Span::styled("edit past days", Style::default().fg(Color::Rgb(180, 180, 195))),
+        ]))
+    };
+    f.render_widget(footer, chunks[5]);
+}
+
+fn render_recent_strip(f: &mut Frame, habit: &Habit, today: NaiveDate, area: Rect) {
+    let is_quit = matches!(habit.kind, HabitKind::Quit { .. });
+    let title = if is_quit {
+        " Last 30 days · failures "
+    } else {
+        " Last 30 days · activity "
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(COL_DIM))
+        .title(Span::styled(
+            title,
+            Style::default().fg(COL_HEADER).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Build 30 daily samples ending today: 0 or 1.
+    let days = 30i64;
+    let start = today - Duration::days(days - 1);
+    let mut data: Vec<u64> = Vec::with_capacity(days as usize);
+    for i in 0..days {
+        let d = start + Duration::days(i);
+        if d < habit.created_at {
+            data.push(0);
+            continue;
+        }
+        let hit = match &habit.kind {
+            HabitKind::Build => habit.completions.contains(&d),
+            HabitKind::Quit { failures } => failures.contains(&d),
+        };
+        data.push(if hit { 1 } else { 0 });
+    }
+
+    let bar_color = if is_quit {
+        COL_DANGER
+    } else {
+        Color::Rgb(150, 220, 130)
+    };
+
+    let sparkline = Sparkline::default()
+        .data(&data)
+        .max(1)
+        .bar_set(symbols::bar::NINE_LEVELS)
+        .style(Style::default().fg(bar_color));
+    f.render_widget(sparkline, inner);
+}
+
+fn render_binary_calendar(
+    f: &mut Frame,
+    habit: &Habit,
+    today: NaiveDate,
+    state: &DetailState,
+    area: Rect,
+) {
+    let is_quit = matches!(habit.kind, HabitKind::Quit { .. });
+    let weeks: i64 = 18;
+
+    let title = if state.edit_mode {
+        format!(
+            " {}-week binary view · editing {} ",
+            weeks,
+            state.cursor.format("%a %Y-%m-%d")
+        )
+    } else if is_quit {
+        format!(" {}-week binary view · failures ", weeks)
+    } else {
+        format!(" {}-week binary view · done / missed ", weeks)
+    };
+    let border_color = if state.edit_mode { COL_ACCENT } else { COL_DIM };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color))
+        .title(Span::styled(
+            title,
+            Style::default().fg(COL_HEADER).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Anchor: end of current ISO week (Sunday).
+    let dow = today.weekday().num_days_from_monday() as i64;
+    let week_end = today + Duration::days(6 - dow);
+    let total_days = weeks * 7;
+    let week_start = week_end - Duration::days(total_days - 1);
+
+    let labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    for row in 0..7 {
+        let mut spans: Vec<Span> = Vec::with_capacity(weeks as usize + 2);
+        spans.push(Span::styled(
+            format!(" {}  ", labels[row]),
+            Style::default().fg(Color::DarkGray),
+        ));
+        for col in 0..weeks as usize {
+            let date = week_start + Duration::days((col as i64) * 7 + row as i64);
+            spans.push(binary_cell(habit, date, today, state));
+            spans.push(Span::raw(" "));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(binary_legend(is_quit));
+
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn binary_cell(
+    habit: &Habit,
+    date: NaiveDate,
+    today: NaiveDate,
+    state: &DetailState,
+) -> Span<'static> {
+    let is_cursor = state.edit_mode && date == state.cursor;
+    let is_quit = matches!(habit.kind, HabitKind::Quit { .. });
+
+    if date > today {
+        // future
+        if is_cursor {
+            return Span::styled(
+                "[]",
+                Style::default().fg(COL_ACCENT).add_modifier(Modifier::BOLD),
+            );
+        }
+        return Span::styled("  ", Style::default());
+    }
+    if date < habit.created_at {
+        let s = Style::default().fg(Color::Rgb(40, 42, 50));
+        let s = if is_cursor { s.add_modifier(Modifier::REVERSED) } else { s };
+        return Span::styled(CELL, s);
+    }
+
+    let hit = match &habit.kind {
+        HabitKind::Build => habit.completions.contains(&date),
+        HabitKind::Quit { failures } => failures.contains(&date),
+    };
+
+    let (glyph, color) = if is_quit {
+        if hit {
+            (CELL_HALF, COL_DANGER)
+        } else {
+            // for a Quit habit, "missed" = clean = good
+            (CELL, Color::Rgb(80, 140, 100))
+        }
+    } else if hit {
+        (CELL, Color::Rgb(150, 220, 130))
+    } else {
+        (CELL, Color::Rgb(60, 64, 74))
+    };
+
+    let mut style = Style::default().fg(color);
+    if is_cursor {
+        style = style
+            .add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::REVERSED);
+    }
+    Span::styled(glyph, style)
+}
+
+fn binary_legend(is_quit: bool) -> Line<'static> {
+    if is_quit {
+        Line::from(vec![
+            Span::raw("    "),
+            Span::styled("Legend: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(CELL, Style::default().fg(Color::Rgb(80, 140, 100))),
+            Span::styled(" clean   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(CELL_HALF, Style::default().fg(COL_DANGER)),
+            Span::styled(" failure   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(CELL, Style::default().fg(Color::Rgb(40, 42, 50))),
+            Span::styled(" before created", Style::default().fg(Color::DarkGray)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::raw("    "),
+            Span::styled("Legend: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(CELL, Style::default().fg(Color::Rgb(150, 220, 130))),
+            Span::styled(" done   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(CELL, Style::default().fg(Color::Rgb(60, 64, 74))),
+            Span::styled(" missed   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(CELL, Style::default().fg(Color::Rgb(40, 42, 50))),
+            Span::styled(" before created", Style::default().fg(Color::DarkGray)),
+        ])
+    }
 }
 
 fn render_detail_header(f: &mut Frame, habit: &Habit, today: NaiveDate, area: Rect) {
@@ -792,154 +1107,231 @@ fn affirmation(streak: u32, is_quit: bool) -> (String, Color) {
     (msg.to_string(), color)
 }
 
-fn render_heatmap(f: &mut Frame, habit: &Habit, today: NaiveDate, area: Rect) {
-    let is_quit = matches!(habit.kind, HabitKind::Quit { .. });
-    let title = if is_quit {
-        format!(" Last {} weeks · failures shown ", HEATMAP_WEEKS)
-    } else {
-        format!(" Last {} weeks · activity heatmap ", HEATMAP_WEEKS)
-    };
+// ---------- Global heatmap (across all habits) ----------
+
+fn render_global_heatmap(f: &mut Frame, app: &App) {
+    let area = f.area();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // header
+            Constraint::Length(2), // affirmation
+            Constraint::Min(10),   // heatmap
+            Constraint::Length(1), // footer
+        ])
+        .split(area);
+
+    render_global_header(f, &app.store, app.today, chunks[0]);
+    render_global_summary(f, &app.store, app.today, chunks[1]);
+    render_global_grid(f, &app.store, app.today, chunks[2]);
+
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled("  [esc/q/g/⏎] ", Style::default().fg(COL_NAV).add_modifier(Modifier::BOLD)),
+        Span::styled("back to list", Style::default().fg(Color::Rgb(180, 180, 195))),
+    ]));
+    f.render_widget(footer, chunks[3]);
+}
+
+fn render_global_header(f: &mut Frame, store: &HabitStore, today: NaiveDate, area: Rect) {
+    let weeks: i64 = 26;
+    let start = today - Duration::days(weeks * 7 - 1);
+    let mut total_completions: u64 = 0;
+    let mut active_days = std::collections::BTreeSet::<NaiveDate>::new();
+    for h in &store.habits {
+        if !matches!(h.kind, HabitKind::Build) {
+            continue;
+        }
+        for d in h.completions.range(start..=today) {
+            total_completions += 1;
+            active_days.insert(*d);
+        }
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(COL_ACCENT));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let line = Line::from(vec![
+        Span::styled(
+            " GLOBAL ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(COL_ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "Activity across all habits",
+            Style::default().fg(COL_HEADER).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
+        Span::styled(
+            format!("{} weeks", weeks),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
+        Span::styled(
+            format!("{} completions", total_completions),
+            Style::default()
+                .fg(Color::Rgb(200, 200, 220))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
+        Span::styled(
+            format!("{} active days", active_days.len()),
+            Style::default()
+                .fg(Color::Rgb(200, 200, 220))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(line), inner);
+}
+
+fn render_global_summary(f: &mut Frame, store: &HabitStore, today: NaiveDate, area: Rect) {
+    let build_count = store
+        .habits
+        .iter()
+        .filter(|h| matches!(h.kind, HabitKind::Build))
+        .count();
+    let quit_count = store.habits.len() - build_count;
+
+    let done_today = store
+        .habits
+        .iter()
+        .filter(|h| {
+            matches!(h.kind, HabitKind::Build) && h.completions.contains(&today)
+        })
+        .count();
+
+    let line = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            format!("{} build", build_count),
+            Style::default().fg(Color::Rgb(140, 200, 160)),
+        ),
+        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
+        Span::styled(
+            format!("{} quit", quit_count),
+            Style::default().fg(Color::Rgb(200, 180, 220)),
+        ),
+        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
+        Span::styled(
+            format!("{} completed today", done_today),
+            Style::default().fg(COL_ACCENT).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
+}
+
+fn render_global_grid(f: &mut Frame, store: &HabitStore, today: NaiveDate, area: Rect) {
+    let weeks: i64 = 26;
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(COL_DIM))
         .title(Span::styled(
-            title,
+            format!(" Last {} weeks · combined activity ", weeks),
             Style::default().fg(COL_HEADER).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Anchor: end of current ISO week (Sunday).
+    // Aggregate Build completions per date.
     let dow = today.weekday().num_days_from_monday() as i64;
     let week_end = today + Duration::days(6 - dow);
-    let total_days = HEATMAP_WEEKS * 7;
+    let total_days = weeks * 7;
     let week_start = week_end - Duration::days(total_days - 1);
 
-    // Build grid: rows=weekday (Mon..Sun), cols=week index.
-    let mut date_grid: Vec<Vec<NaiveDate>> = vec![vec![week_start; HEATMAP_WEEKS as usize]; 7];
-    for col in 0..HEATMAP_WEEKS {
-        let col_start = week_start + Duration::days(col * 7);
-        for row in 0..7 {
-            date_grid[row as usize][col as usize] = col_start + Duration::days(row as i64);
+    let mut counts: BTreeMap<NaiveDate, u32> = BTreeMap::new();
+    for h in &store.habits {
+        if !matches!(h.kind, HabitKind::Build) {
+            continue;
+        }
+        for d in h.completions.range(week_start..=today) {
+            *counts.entry(*d).or_insert(0) += 1;
         }
     }
+    let max_count = counts.values().copied().max().unwrap_or(0);
 
-    // Per-day "intensity": 0..=4 for Build, 0|hit for Quit (hit = failure).
-    // For Build daily/weekly/everyN: any completion → level 4 (binary).
-    // For NTimesPerWeek(n): each completion within its ISO week is also a hit;
-    //   we color the cell by the week's count/n ratio if the day is completed
-    //   (so a fuller week shows brighter even with the same dot).
     let labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    let mut lines: Vec<Line> = Vec::with_capacity(9);
-
-    // Row of week-month markers (just an empty padding row keeps breathing room).
+    let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(""));
 
     for row in 0..7 {
-        let mut spans: Vec<Span> = Vec::with_capacity(HEATMAP_WEEKS as usize + 2);
+        let mut spans: Vec<Span> = Vec::with_capacity(weeks as usize + 2);
         spans.push(Span::styled(
             format!(" {}  ", labels[row]),
             Style::default().fg(Color::DarkGray),
         ));
-        for col in 0..HEATMAP_WEEKS as usize {
-            let date = date_grid[row][col];
-            let span = render_cell(habit, date, today, is_quit);
-            spans.push(span);
+        for col in 0..weeks as usize {
+            let date = week_start + Duration::days((col as i64) * 7 + row as i64);
+            spans.push(global_cell(date, today, &counts, max_count));
             spans.push(Span::raw(" "));
         }
         lines.push(Line::from(spans));
     }
 
-    // Breathing room + legend.
     lines.push(Line::from(""));
-    lines.push(legend_line(is_quit));
+    lines.push(global_legend());
 
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_cell(habit: &Habit, date: NaiveDate, today: NaiveDate, is_quit: bool) -> Span<'static> {
+fn global_cell(
+    date: NaiveDate,
+    today: NaiveDate,
+    counts: &BTreeMap<NaiveDate, u32>,
+    max_count: u32,
+) -> Span<'static> {
     if date > today {
-        return Span::styled(
-            "  ",
-            Style::default().fg(Color::Black),
-        );
+        return Span::styled("  ", Style::default());
     }
-    if date < habit.created_at {
-        return Span::styled(CELL, Style::default().fg(Color::Rgb(28, 30, 38)));
-    }
-
-    if is_quit {
-        let failure = match &habit.kind {
-            HabitKind::Quit { failures } => failures.contains(&date),
-            _ => false,
-        };
-        return if failure {
-            Span::styled(CELL_HALF, Style::default().fg(COL_DANGER))
-        } else {
-            Span::styled(CELL, Style::default().fg(Color::Rgb(60, 100, 70)))
-        };
-    }
-
-    let done = habit.completions.contains(&date);
-    let level: u8 = match habit.frequency {
-        Frequency::NTimesPerWeek(n) if done => {
-            let monday = iso_week_monday(date);
-            let sunday = monday + Duration::days(6);
-            let count = habit.completions.range(monday..=sunday).count() as u32;
-            // 1.. n: 1→2, mid→3, ≥n→4.
-            let n = n.max(1);
-            if count >= n {
-                4
-            } else if count * 2 >= n {
-                3
-            } else {
-                2
-            }
-        }
-        _ if done => 4,
-        _ => 0,
-    };
-    let color = build_palette(level);
-    Span::styled(CELL, Style::default().fg(color))
-}
-
-fn build_palette(level: u8) -> Color {
-    match level {
-        0 => Color::Rgb(38, 42, 52),     // empty (almost background)
-        1 => Color::Rgb(60, 100, 70),
-        2 => Color::Rgb(80, 140, 90),
-        3 => Color::Rgb(110, 180, 110),
-        _ => Color::Rgb(150, 220, 130),  // brightest
-    }
-}
-
-fn legend_line(is_quit: bool) -> Line<'static> {
-    if is_quit {
-        Line::from(vec![
-            Span::raw("    "),
-            Span::styled("Legend: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(CELL, Style::default().fg(Color::Rgb(60, 100, 70))),
-            Span::styled(" clean   ", Style::default().fg(Color::DarkGray)),
-            Span::styled(CELL_HALF, Style::default().fg(COL_DANGER)),
-            Span::styled(" failure logged   ", Style::default().fg(Color::DarkGray)),
-            Span::styled(CELL, Style::default().fg(Color::Rgb(28, 30, 38))),
-            Span::styled(" before created", Style::default().fg(Color::DarkGray)),
-        ])
+    let n = counts.get(&date).copied().unwrap_or(0);
+    let level = if max_count == 0 || n == 0 {
+        0
     } else {
-        Line::from(vec![
-            Span::raw("    "),
-            Span::styled("Less ", Style::default().fg(Color::DarkGray)),
-            Span::styled(CELL, Style::default().fg(build_palette(0))),
-            Span::raw(" "),
-            Span::styled(CELL, Style::default().fg(build_palette(1))),
-            Span::raw(" "),
-            Span::styled(CELL, Style::default().fg(build_palette(2))),
-            Span::raw(" "),
-            Span::styled(CELL, Style::default().fg(build_palette(3))),
-            Span::raw(" "),
-            Span::styled(CELL, Style::default().fg(build_palette(4))),
-            Span::styled(" More", Style::default().fg(Color::DarkGray)),
-        ])
+        // Map to 1..=4.
+        let ratio = (n as f32) / (max_count as f32);
+        if ratio >= 0.75 {
+            4
+        } else if ratio >= 0.5 {
+            3
+        } else if ratio >= 0.25 {
+            2
+        } else {
+            1
+        }
+    };
+    Span::styled(CELL, Style::default().fg(global_palette(level)))
+}
+
+fn global_palette(level: u8) -> Color {
+    match level {
+        0 => Color::Rgb(38, 42, 52),
+        1 => Color::Rgb(80, 110, 150),
+        2 => Color::Rgb(120, 160, 200),
+        3 => Color::Rgb(180, 200, 240),
+        _ => Color::Rgb(245, 200, 90),
     }
+}
+
+fn global_legend() -> Line<'static> {
+    Line::from(vec![
+        Span::raw("    "),
+        Span::styled("Less ", Style::default().fg(Color::DarkGray)),
+        Span::styled(CELL, Style::default().fg(global_palette(0))),
+        Span::raw(" "),
+        Span::styled(CELL, Style::default().fg(global_palette(1))),
+        Span::raw(" "),
+        Span::styled(CELL, Style::default().fg(global_palette(2))),
+        Span::raw(" "),
+        Span::styled(CELL, Style::default().fg(global_palette(3))),
+        Span::raw(" "),
+        Span::styled(CELL, Style::default().fg(global_palette(4))),
+        Span::styled(" More", Style::default().fg(Color::DarkGray)),
+    ])
 }
