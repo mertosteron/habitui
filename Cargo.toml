@@ -1,14 +1,14 @@
 [package]
-name = "habit-tracker"
+name = "habitui"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "habit_tracker"
+name = "habitui"
 path = "src/lib.rs"
 
 [[bin]]
-name = "habit-tracker"
+name = "habitui"
 path = "src/main.rs"
 
 [dependencies]

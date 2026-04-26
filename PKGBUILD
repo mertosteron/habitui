@@ -1,17 +1,23 @@
-# Maintainer: habit-tracker team
+# Maintainer: habitui contributors
 #
-# This PKGBUILD is built in-tree: run `makepkg -si` from the project root.
+# In-tree PKGBUILD: run `makepkg -si` from the project root.
 # It uses source=() and copies the working tree from $startdir into the
 # build directory, so it does not require a tarball or git remote.
-pkgname=habit-tracker
+#
+# To build from a release tarball instead, replace source=() and the
+# prepare() body with something like:
+#   source=("$pkgname-$pkgver.tar.gz::https://example.invalid/.../v$pkgver.tar.gz")
+#   sha256sums=('SKIP')
+# and remove the cp -a calls below.
+pkgname=habitui
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Terminal UI habit tracker written in Rust"
 arch=('x86_64')
-url="https://example.invalid/habit-tracker"
+url="https://example.invalid/habitui"
 license=('MIT')
 depends=('gcc-libs' 'glibc')
-makedepends=('cargo')
+makedepends=('cargo' 'rust')
 source=()
 sha256sums=()
 

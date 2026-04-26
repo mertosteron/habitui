@@ -2,12 +2,12 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::data::HabitStore;
+use crate::data::{HabitStore, STORE_VERSION};
 
-const APP_DIR: &str = "habit-tracker";
+const APP_DIR: &str = "habitui";
 const FILE_NAME: &str = "habits.json";
 
-/// Default on-disk location: `<dirs::data_dir()>/habit-tracker/habits.json`.
+/// Default on-disk location: `<dirs::data_dir()>/habitui/habits.json`.
 /// On Linux this honors `XDG_DATA_HOME` (falling back to `~/.local/share`).
 pub fn data_path() -> PathBuf {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -24,8 +24,15 @@ pub fn load() -> io::Result<HabitStore> {
 pub fn load_from(path: &Path) -> io::Result<HabitStore> {
     match fs::read(path) {
         Ok(bytes) => {
-            serde_json::from_slice::<HabitStore>(&bytes)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+            let mut store: HabitStore = serde_json::from_slice(&bytes)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            // Migrate older versions in-memory: serde defaults handle new
+            // fields, but we still want the version stamp current so a
+            // subsequent save reflects the migrated schema.
+            if store.version < STORE_VERSION {
+                store.version = STORE_VERSION;
+            }
+            Ok(store)
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(HabitStore::new()),
         Err(e) => Err(e),

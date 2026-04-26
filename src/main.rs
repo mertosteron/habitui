@@ -1,4 +1,4 @@
-use habit_tracker::{storage, tui, HabitStore};
+use habitui::{storage, tui, HabitStore};
 
 fn main() -> std::io::Result<()> {
     let mut store = storage::load().unwrap_or_else(|_| HabitStore::new());

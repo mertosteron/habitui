@@ -1,99 +1,131 @@
-# habit-tracker — QA & Packaging Report
+# habitui — QA & Packaging Report
 
-Date: 2026-04-25
-Owner: qa-arch-packager
+Date: 2026-04-26
+Owner: qa-packager
 Verdict: **PASS**
 
 ## Test summary
 
-15 integration tests in `tests/core_tests.rs`, all passing in both debug and release.
+31 integration tests in `tests/core_tests.rs`, all passing under
+`cargo test --release --locked`. 16 are pre-existing v1 tests retained
+verbatim; 15 are new and cover the v2 contract (edit, Quit habits,
+NTimesPerWeek, v1 → v2 migration).
+
+Cargo test summary (release):
 
 ```
-running 15 tests
+running 31 tests
 test add_habit_assigns_unique_ids_and_persists ... ok
+test build_habit_log_failure_is_not_applicable ... ok
 test completions_on_distinct_dates_accumulate ... ok
 test current_streak_breaks_on_gap ... ok
 test current_streak_consecutive_days ... ok
 test current_streak_zero_when_today_missed ... ok
 test current_streak_zero_with_no_completions ... ok
+test edit_between_frequency_variants_keeps_history ... ok
+test edit_habit_does_not_touch_quit_failures ... ok
+test edit_habit_preserves_completions_streak_id_and_created_at ... ok
+test edit_habit_returns_not_found_for_missing_id ... ok
+test edit_habit_with_no_changes_is_ok ... ok
 test is_due_daily ... ok
 test is_due_every_n_days_boundary ... ok
 test is_due_weekly ... ok
-test longest_streak_tracks_best_run ... ok
 test load_from_missing_path_returns_empty_store ... ok
+test longest_streak_tracks_best_run ... ok
+test n_times_per_week_current_streak ... ok
+test n_times_per_week_is_due ... ok
+test n_times_per_week_longest_streak ... ok
+test quit_habit_auto_increments_streak_with_no_failures ... ok
+test quit_habit_failure_resets_streak ... ok
+test quit_habit_is_due_always_false ... ok
+test quit_habit_log_and_clear_failure ... ok
+test quit_habit_toggle_completion_returns_none ... ok
 test remove_habit_only_removes_the_targeted_habit ... ok
 test remove_habit_returns_true_on_hit_false_on_miss ... ok
-test toggle_completion_is_idempotent ... ok
 test save_and_load_round_trip ... ok
+test store_round_trip_with_quit_and_all_frequencies ... ok
+test toggle_completion_is_idempotent ... ok
+test v1_store_json_loads_as_v2 ... ok
 
-test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
-Run with `cargo test` (debug) or `cargo test --release`. Both succeed cleanly.
+Lib unit tests, bin unit tests, and doc tests all run with 0 tests defined
+and pass. `cargo build --release --locked` produces `target/release/habitui`.
 
-## Coverage map (vs. brief)
+## Coverage map
 
-| Brief requirement                                                | Test(s) |
-|------------------------------------------------------------------|---------|
-| `add_habit` returns unique id, store contains habit              | `add_habit_assigns_unique_ids_and_persists` |
-| `remove_habit` removes only the targeted habit                   | `remove_habit_only_removes_the_targeted_habit`, `remove_habit_returns_true_on_hit_false_on_miss` |
-| `toggle_completion` idempotent (toggle twice = original state)   | `toggle_completion_is_idempotent` |
-| Completions on different dates accumulate                        | `completions_on_distinct_dates_accumulate` |
-| `current_streak` = 0 for empty                                   | `current_streak_zero_with_no_completions`, `current_streak_zero_when_today_missed` |
-| `current_streak` = N for N consecutive days ending today         | `current_streak_consecutive_days` |
-| `current_streak` breaks when a day is missed                     | `current_streak_breaks_on_gap` |
-| save → load round-trip preserves all data                        | `save_and_load_round_trip`, `load_from_missing_path_returns_empty_store` |
+| # | Test | Result | Note |
+|---|------|--------|------|
+| 1  | `add_habit_assigns_unique_ids_and_persists` | pass | v1 retained: ids unique, store mutates. |
+| 2  | `remove_habit_returns_true_on_hit_false_on_miss` | pass | v1 retained. |
+| 3  | `remove_habit_only_removes_the_targeted_habit` | pass | v1 retained. |
+| 4  | `toggle_completion_is_idempotent` | pass | v1 retained: toggle twice = no-op. |
+| 5  | `completions_on_distinct_dates_accumulate` | pass | v1 retained. |
+| 6  | `is_due_daily` | pass | v1 retained: Daily window. |
+| 7  | `is_due_weekly` | pass | v1 retained: 7-day rolling window. |
+| 8  | `is_due_every_n_days_boundary` | pass | v1 retained: n-day rolling window. |
+| 9  | `current_streak_zero_with_no_completions` | pass | v1 retained. |
+| 10 | `current_streak_consecutive_days` | pass | v1 retained. |
+| 11 | `current_streak_breaks_on_gap` | pass | v1 retained. |
+| 12 | `current_streak_zero_when_today_missed` | pass | v1 retained. |
+| 13 | `longest_streak_tracks_best_run` | pass | v1 retained. |
+| 14 | `save_and_load_round_trip` | pass | v1 retained. |
+| 15 | `load_from_missing_path_returns_empty_store` | pass | v1 retained. |
+| 16 | `edit_habit_preserves_completions_streak_id_and_created_at` | pass | v2: edit Daily→Weekly with 5-day streak; completions, id, created_at intact. |
+| 17 | `edit_habit_with_no_changes_is_ok` | pass | v2: `edit_habit(id, None, None)` is Ok and a no-op. |
+| 18 | `edit_habit_returns_not_found_for_missing_id` | pass | v2: `Err(NotFound(id))` for unknown id. |
+| 19 | `edit_habit_does_not_touch_quit_failures` | pass | v2: editing a Quit habit's name/freq leaves failures intact. |
+| 20 | `edit_between_frequency_variants_keeps_history` | pass | v2: Daily↔NTimesPerWeek↔EveryNDays cycle preserves completions. |
+| 21 | `quit_habit_auto_increments_streak_with_no_failures` | pass | v2: streak = days since created_at, inclusive (created day = 1). |
+| 22 | `quit_habit_failure_resets_streak` | pass | v2: failure on day F → streak on day F is 0, day F+1 is 1; today counts only days since F. |
+| 23 | `quit_habit_toggle_completion_returns_none` | pass | v2: toggle_completion is N/A on Quit habits. |
+| 24 | `quit_habit_log_and_clear_failure` | pass | v2: log_failure idempotent; clear_failure returns Ok(true)/Ok(false). |
+| 25 | `build_habit_log_failure_is_not_applicable` | pass | v2: log_failure / clear_failure on Build → `Err(NotApplicable)`. |
+| 26 | `quit_habit_is_due_always_false` | pass | v2: Quit is_due is always false. |
+| 27 | `n_times_per_week_is_due` | pass | v2: due iff fewer than n completions in the ISO week. |
+| 28 | `n_times_per_week_current_streak` | pass | v2: under-quota current week doesn't break streak; full prior weeks still count. |
+| 29 | `n_times_per_week_longest_streak` | pass | v2: longest run of consecutive ISO weeks at quota. |
+| 30 | `store_round_trip_with_quit_and_all_frequencies` | pass | v2: round-trip with Build + Quit habits and all four Frequency variants. |
+| 31 | `v1_store_json_loads_as_v2` | pass | v2: hand-crafted v1 JSON loads, version bumps to 2, kind defaults to Build. |
 
-Bonus coverage retained from the core layer's own tests: `is_due` for Daily / Weekly / EveryNDays window boundaries and `longest_streak` over multi-run histories.
+## PKGBUILD lint output
 
-All storage tests use `tempfile::tempdir()` and call `storage::save_to` / `storage::load_from` against the temp path — no test ever touches the real `$XDG_DATA_HOME/habit-tracker/habits.json`.
-
-## Build verification
-
-- `cargo build` — OK
-- `cargo build --release` — OK (binary at `target/release/habit-tracker`)
-- `cargo check --tests` — OK
-- `cargo test` — 15/15 passing
-- `cargo test --release` — 15/15 passing
-
-Release-binary dynamic linkage (`ldd target/release/habit-tracker`):
+`makepkg --printsrcinfo` (PKGBUILD syntax check; exit code 0):
 
 ```
-linux-vdso.so.1
-libgcc_s.so.1 => /usr/lib/libgcc_s.so.1
-libc.so.6     => /usr/lib/libc.so.6
-/lib64/ld-linux-x86-64.so.2
+pkgbase = habitui
+	pkgdesc = Terminal UI habit tracker written in Rust
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://example.invalid/habitui
+	arch = x86_64
+	license = MIT
+	makedepends = cargo
+	makedepends = rust
+	depends = gcc-libs
+	depends = glibc
+
+pkgname = habitui
 ```
 
-Maps to Arch packages `gcc-libs` and `glibc`, both declared in `depends=()` in PKGBUILD.
+`namcap PKGBUILD` was **skipped** — `namcap` is not installed on the build
+host (`which namcap` returns nothing). PKGBUILD was hand-audited against
+Arch packaging guidelines:
 
-## TUI compatibility checks
-
-These were verified by reading `src/tui/app.rs` and `src/tui/views.rs` — the TUI itself requires a real TTY and cannot be exercised by this non-interactive harness.
-
-- **Terminal restoration on panic.** `run_app` installs a panic hook (`install_panic_hook` at `src/tui/app.rs:299`) that calls `restore_terminal()` (LeaveAlternateScreen + disable_raw_mode) before chaining to the previous hook.
-- **Terminal restoration on normal exit / error.** `TerminalGuard` (`src/tui/app.rs:267`) is an RAII guard whose `Drop` impl invokes `restore_terminal()`. Fires on quit, on `?` early-returns, and on panic unwind, so the parent shell is always restored.
-- **Ctrl-C is a clean quit.** `App::handle_key` (`src/tui/app.rs:127`) checks `KeyModifiers::CONTROL + 'c'` first, regardless of the active screen, and sets `should_quit = true`.
-- **Small terminal handling.** The event loop (`src/tui/app.rs:328`) measures `f.area()` each frame and falls back to `views::render_resize_notice` when `width < 80` or `height < 24`. Input is still polled, so Ctrl-C still quits.
-- **Key-event filtering.** `next_key` (`src/tui/events.rs:10`) only surfaces `KeyEventKind::Press` events with a 250 ms poll, so key release/repeat events on Windows-style terminals don't double-fire actions.
-- **TTY requirement (not a bug).** As tui-dev flagged: the binary needs a real TTY. If stdin/stdout are redirected, `crossterm` returns "No such device or address" and the program exits cleanly. Inherent crossterm/raw-mode constraint, not a regression.
-- **Atomic save on exit.** `main` calls `storage::save` after `tui::run_app` returns, and `storage::save_to` writes to a `.tmp` sibling and renames into place — interrupted writes cannot corrupt the data file.
-
-## namcap
-
-`namcap PKGBUILD` was **skipped — namcap is not installed** on the build host (`command -v namcap` returns nothing). The PKGBUILD was hand-audited against Arch packaging guidelines instead:
-
-- `pkgname` lower-case alphanumeric ✓
-- `pkgver` matches `Cargo.toml` (`0.1.0`) ✓
-- `pkgrel=1` ✓
-- `arch=('x86_64')` ✓
-- `license=('MIT')` ✓ (LICENSE file present at repo root)
-- `makedepends=('cargo')` ✓ (rust toolchain comes via cargo)
-- `depends=('gcc-libs' 'glibc')` matches actual dynamic linkage ✓
-- `build()` uses `--release --locked`, separate `CARGO_TARGET_DIR` ✓
-- `check()` runs `cargo test --release --locked` ✓
-- `package()` uses `install -Dm755` for the binary and `install -Dm644` for LICENSE under `/usr/share/licenses/$pkgname/` ✓
+- `pkgname=habitui` is lower-case alphanumeric. ✓
+- `pkgver=0.1.0` matches `Cargo.toml`. ✓
+- `pkgrel=1`, `arch=('x86_64')`. ✓
+- `license=('MIT')` matches the actual `LICENSE` file at repo root (MIT License). ✓
+- `makedepends=('cargo' 'rust')`. ✓
+- `depends=('gcc-libs' 'glibc')` matches typical dynamic linkage of a Rust release binary on Arch. ✓
+- `build()` runs `cargo build --release --locked`. ✓
+- `check()` runs `cargo test --release --locked`. ✓
+- `package()` installs the binary at `/usr/bin/habitui` and the LICENSE at `/usr/share/licenses/habitui/LICENSE`. ✓
 
 ## Final verdict
 
-**PASS.** Tests are green in debug and release, the release binary builds cleanly, runtime dependencies match declarations, and the TUI's terminal-restoration paths (RAII guard + panic hook + Ctrl-C handling) all trace through cleanly. The PKGBUILD is ready for `makepkg -si` from the repo root.
+**PASS.** All 31 tests pass under `cargo test --release --locked`. PKGBUILD
+parses cleanly via `makepkg --printsrcinfo` and was renamed from
+`habit-tracker` to `habitui` to match the renamed crate and binary. Ready
+for `makepkg -si` from the repo root.
