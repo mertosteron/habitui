@@ -21,24 +21,27 @@ git clone [https://github.com/yourusername/habitui.git](https://github.com/youru
 cd habitui
 cargo build --release
 You can find the compiled binary in target/release/. Optionally, move it to your local bin directory:
+```
 
-Bash
+```bash
 mv target/release/habitui ~/.local/bin/
 Usage
 Simply run the application from your terminal:
+```
 
-Bash
+```bash
 habitui
 Default Keybindings
 ↑ / ↓ or k / j: Navigate through your habits
 
-Enter / Space: Mark a habit as done/failed for the day
+Space: Mark a habit as done/failed for the day
 
-n / a: Add a new habit
+a: Add a new habit
 
 d: Delete the selected habit
 
 q / Esc: Quit the application
+```
 
 Contributing
 Contributions, issues, and feature requests are welcome! Feel free to check the issues page.
