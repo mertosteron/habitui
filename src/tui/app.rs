@@ -1,6 +1,6 @@
 use std::io::{self, Stdout};
 
-use chrono::{Duration, Local, NaiveDate};
+use chrono::{Datelike, Duration, Local, NaiveDate};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -279,20 +279,41 @@ pub struct App {
     pub screen: Screen,
     pub selected: usize,
     pub today: NaiveDate,
+    pub year: i32,
     pub should_quit: bool,
     pub status: Option<String>,
 }
 
 impl App {
     pub fn new(store: HabitStore) -> Self {
+        let today = Local::now().date_naive();
         Self {
             store,
             screen: Screen::List,
             selected: 0,
-            today: Local::now().date_naive(),
+            year: today.year(),
+            today,
             should_quit: false,
             status: None,
         }
+    }
+
+    fn change_year(&mut self, delta: i32) {
+        let new_year = self.year + delta;
+        let earliest = self
+            .store
+            .habits
+            .iter()
+            .map(|h| h.created_at.year())
+            .min()
+            .unwrap_or(self.today.year());
+        let lo = earliest.min(self.today.year() - 5);
+        let hi = self.today.year();
+        if new_year < lo || new_year > hi {
+            return;
+        }
+        self.year = new_year;
+        self.status = Some(format!("Showing year {}.", self.year));
     }
 
     fn clamp_selection(&mut self) {
@@ -389,6 +410,12 @@ impl App {
             }
             KeyCode::Char('g') | KeyCode::Char('G') => {
                 return Screen::GlobalHeatmap;
+            }
+            KeyCode::Char('[') => {
+                self.change_year(-1);
+            }
+            KeyCode::Char(']') => {
+                self.change_year(1);
             }
             _ => {}
         }
@@ -573,9 +600,18 @@ impl App {
             KeyCode::Char('e') | KeyCode::Char('E') => {
                 state.edit_mode = true;
                 state.cursor = self.today;
+                self.year = self.today.year();
                 self.status = Some(
                     "Edit mode: ←↑↓→ to move · space toggles · e or esc to exit.".to_string(),
                 );
+                Screen::Detail(state)
+            }
+            KeyCode::Char('[') => {
+                self.change_year(-1);
+                Screen::Detail(state)
+            }
+            KeyCode::Char(']') => {
+                self.change_year(1);
                 Screen::Detail(state)
             }
             _ => Screen::Detail(state),
@@ -613,6 +649,14 @@ impl App {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('g') | KeyCode::Enter => {
                 Screen::List
+            }
+            KeyCode::Char('[') => {
+                self.change_year(-1);
+                Screen::GlobalHeatmap
+            }
+            KeyCode::Char(']') => {
+                self.change_year(1);
+                Screen::GlobalHeatmap
             }
             _ => Screen::GlobalHeatmap,
         }

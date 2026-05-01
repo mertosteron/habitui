@@ -80,31 +80,12 @@ fn render_list(f: &mut Frame, app: &mut App) {
         ])
         .split(f.area());
 
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "✦ ",
-            Style::default().fg(COL_ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "habitui",
-            Style::default()
-                .fg(COL_ACCENT)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        ),
-        Span::styled(
-            "   ",
-            Style::default(),
-        ),
-        Span::styled(
-            format!("{}", app.today.format("%a %Y-%m-%d")),
-            Style::default().fg(COL_HEADER),
-        ),
-        Span::styled(
-            format!("   ·   {} habit{}", app.store.habits.len(),
-                if app.store.habits.len() == 1 { "" } else { "s" }),
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]));
+    let title = Paragraph::new(Line::from(Span::styled(
+        "Habitui",
+        Style::default()
+            .fg(COL_ACCENT)
+            .add_modifier(Modifier::BOLD),
+    )));
     f.render_widget(title, chunks[0]);
 
     let header = "  NAME                          FREQUENCY        STREAK    TODAY";
@@ -330,6 +311,8 @@ fn render_footer<'a>(quit_habit_selected: bool) -> Paragraph<'a> {
     extend_spans(&mut spans, keybinding("e", "edit", COL_MUT));
     spans.push(sep.clone());
     extend_spans(&mut spans, keybinding("d", "delete", COL_DANGER));
+    spans.push(sep.clone());
+    extend_spans(&mut spans, keybinding("[/]", "year", COL_NAV));
     spans.push(sep);
     extend_spans(&mut spans, keybinding("q", "quit", COL_QUIT_BG));
 
@@ -738,8 +721,8 @@ fn render_detail(f: &mut Frame, app: &App, state: &DetailState) {
 
     render_detail_header(f, habit, app.today, chunks[0]);
     render_motivation_line(f, habit, app.today, chunks[1]);
-    render_recent_strip(f, habit, app.today, chunks[2]);
-    render_binary_calendar(f, habit, app.today, state, chunks[3]);
+    render_recent_strip(f, habit, app.today, app.year, chunks[2]);
+    render_binary_calendar(f, habit, app.today, app.year, state, chunks[3]);
 
     let status_line = match &app.status {
         Some(msg) => Line::from(Span::styled(
@@ -776,17 +759,20 @@ fn render_detail(f: &mut Frame, app: &App, state: &DetailState) {
             Span::styled("   ·   ", Style::default().fg(COL_DIM)),
             Span::styled("[e] ", Style::default().fg(COL_MUT).add_modifier(Modifier::BOLD)),
             Span::styled("edit past days", Style::default().fg(Color::Rgb(180, 180, 195))),
+            Span::styled("   ·   ", Style::default().fg(COL_DIM)),
+            Span::styled("[ / ] ", Style::default().fg(COL_NAV).add_modifier(Modifier::BOLD)),
+            Span::styled("year", Style::default().fg(Color::Rgb(180, 180, 195))),
         ]))
     };
     f.render_widget(footer, chunks[5]);
 }
 
-fn render_recent_strip(f: &mut Frame, habit: &Habit, today: NaiveDate, area: Rect) {
+fn render_recent_strip(f: &mut Frame, habit: &Habit, today: NaiveDate, year: i32, area: Rect) {
     let is_quit = matches!(habit.kind, HabitKind::Quit { .. });
     let title = if is_quit {
-        " Last 30 days · failures "
+        format!(" {} · failures by day ", year)
     } else {
-        " Last 30 days · activity "
+        format!(" {} · activity by day ", year)
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -799,21 +785,23 @@ fn render_recent_strip(f: &mut Frame, habit: &Habit, today: NaiveDate, area: Rec
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Build 30 daily samples ending today: 0 or 1.
-    let days = 30i64;
-    let start = today - Duration::days(days - 1);
-    let mut data: Vec<u64> = Vec::with_capacity(days as usize);
-    for i in 0..days {
-        let d = start + Duration::days(i);
+    // Daily samples for the selected year (Jan 1 .. Dec 31, clipped at today).
+    let year_start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap_or(today);
+    let year_end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap_or(today);
+    let end = if year_end > today { today } else { year_end };
+    let mut data: Vec<u64> = Vec::new();
+    let mut d = year_start;
+    while d <= end {
         if d < habit.created_at {
             data.push(0);
-            continue;
+        } else {
+            let hit = match &habit.kind {
+                HabitKind::Build => habit.completions.contains(&d),
+                HabitKind::Quit { failures } => failures.contains(&d),
+            };
+            data.push(if hit { 1 } else { 0 });
         }
-        let hit = match &habit.kind {
-            HabitKind::Build => habit.completions.contains(&d),
-            HabitKind::Quit { failures } => failures.contains(&d),
-        };
-        data.push(if hit { 1 } else { 0 });
+        d = d + Duration::days(1);
     }
 
     let bar_color = if is_quit {
@@ -834,6 +822,7 @@ fn render_binary_calendar(
     f: &mut Frame,
     habit: &Habit,
     today: NaiveDate,
+    year: i32,
     state: &DetailState,
     area: Rect,
 ) {
@@ -842,14 +831,14 @@ fn render_binary_calendar(
 
     let title = if state.edit_mode {
         format!(
-            " {}-week binary view · editing {} ",
-            weeks,
+            " {} · binary view · editing {} ",
+            year,
             state.cursor.format("%a %Y-%m-%d")
         )
     } else if is_quit {
-        format!(" {}-week binary view · failures ", weeks)
+        format!(" {} · binary view · failures ", year)
     } else {
-        format!(" {}-week binary view · done / missed ", weeks)
+        format!(" {} · binary view · done / missed ", year)
     };
     let border_color = if state.edit_mode { COL_ACCENT } else { COL_DIM };
     let block = Block::default()
@@ -863,15 +852,16 @@ fn render_binary_calendar(
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Anchor: end of current ISO week (Sunday).
-    let dow = today.weekday().num_days_from_monday() as i64;
-    let week_end = today + Duration::days(6 - dow);
+    // Anchor to the selected year. Current year uses today; past years end on Dec 31.
+    let year_end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap_or(today);
+    let anchor = if year == today.year() { today } else { year_end.min(today) };
+    let dow = anchor.weekday().num_days_from_monday() as i64;
+    let week_end = anchor + Duration::days(6 - dow);
     let total_days = weeks * 7;
     let week_start = week_end - Duration::days(total_days - 1);
 
     let labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(""));
 
     for row in 0..7 {
         let mut spans: Vec<Span> = Vec::with_capacity(weeks as usize + 2);
@@ -881,10 +871,13 @@ fn render_binary_calendar(
         ));
         for col in 0..weeks as usize {
             let date = week_start + Duration::days((col as i64) * 7 + row as i64);
-            spans.push(binary_cell(habit, date, today, state));
+            spans.push(binary_cell(habit, date, today, year, state));
             spans.push(Span::raw(" "));
         }
         lines.push(Line::from(spans));
+        if row < 6 {
+            lines.push(Line::from(""));
+        }
     }
 
     lines.push(Line::from(""));
@@ -897,6 +890,7 @@ fn binary_cell(
     habit: &Habit,
     date: NaiveDate,
     today: NaiveDate,
+    year: i32,
     state: &DetailState,
 ) -> Span<'static> {
     let is_cursor = state.edit_mode && date == state.cursor;
@@ -911,6 +905,12 @@ fn binary_cell(
             );
         }
         return Span::styled("  ", Style::default());
+    }
+    if date.year() != year {
+        // outside selected year
+        let s = Style::default().fg(Color::Rgb(28, 30, 36));
+        let s = if is_cursor { s.add_modifier(Modifier::REVERSED) } else { s };
+        return Span::styled(CELL, s);
     }
     if date < habit.created_at {
         let s = Style::default().fg(Color::Rgb(40, 42, 50));
@@ -1090,8 +1090,14 @@ fn affirmation(streak: u32, is_quit: bool) -> (String, Color) {
             3..=6 => "A few days clean — the urge gets quieter from here.",
             7..=13 => "A full week clean. Real progress.",
             14..=29 => "Two weeks. The new normal is taking shape.",
-            30..=99 => "A month clean. This is who you are now.",
-            _ => "A hundred days. Quiet, steady, hard-won.",
+            30..=59 => "A month clean. This is who you are now.",
+            60..=89 => "Two months clean. The old craving rarely calls anymore.",
+            90..=119 => "Three months. The version of you that struggled feels far away.",
+            120..=179 => "Four months in — clarity has replaced the noise.",
+            180..=269 => "Half a year clean. You have rewritten a part of yourself.",
+            270..=364 => "Nine months. What was a battle is now a quiet boundary.",
+            365..=729 => "One full year clean. This is the new floor, not the ceiling.",
+            _ => "Years now. The struggle is a memory; the freedom is the life.",
         }
     } else {
         match streak {
@@ -1100,8 +1106,14 @@ fn affirmation(streak: u32, is_quit: bool) -> (String, Color) {
             3..=6 => "Three days in — the rhythm is forming.",
             7..=13 => "A week deep. Consistency over intensity.",
             14..=29 => "Two weeks. This is becoming a habit, not a chore.",
-            30..=99 => "A full month. You don't need motivation any more — you have momentum.",
-            _ => "A hundred days. This is mastery, quietly accumulating.",
+            30..=59 => "A full month. You don't need motivation any more — you have momentum.",
+            60..=89 => "Two months. Identity is shifting — you are someone who does this.",
+            90..=119 => "Three months. The habit now carries you on the days you would have skipped.",
+            120..=179 => "Four months. Compounding, quietly, every single day.",
+            180..=269 => "Half a year. Look back at who started — they would not believe this.",
+            270..=364 => "Nine months. This is craft now, not effort.",
+            365..=729 => "A full year. Streaks like this rewrite a life.",
+            _ => "Years deep. This is mastery, quietly accumulating.",
         }
     };
     (msg.to_string(), color)
@@ -1122,27 +1134,37 @@ fn render_global_heatmap(f: &mut Frame, app: &App) {
         ])
         .split(area);
 
-    render_global_header(f, &app.store, app.today, chunks[0]);
+    render_global_header(f, &app.store, app.today, app.year, chunks[0]);
     render_global_summary(f, &app.store, app.today, chunks[1]);
-    render_global_grid(f, &app.store, app.today, chunks[2]);
+    render_global_grid(f, &app.store, app.today, app.year, chunks[2]);
 
     let footer = Paragraph::new(Line::from(vec![
         Span::styled("  [esc/q/g/⏎] ", Style::default().fg(COL_NAV).add_modifier(Modifier::BOLD)),
         Span::styled("back to list", Style::default().fg(Color::Rgb(180, 180, 195))),
+        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
+        Span::styled("[ / ] ", Style::default().fg(COL_NAV).add_modifier(Modifier::BOLD)),
+        Span::styled("year", Style::default().fg(Color::Rgb(180, 180, 195))),
     ]));
     f.render_widget(footer, chunks[3]);
 }
 
-fn render_global_header(f: &mut Frame, store: &HabitStore, today: NaiveDate, area: Rect) {
-    let weeks: i64 = 26;
-    let start = today - Duration::days(weeks * 7 - 1);
+fn render_global_header(
+    f: &mut Frame,
+    store: &HabitStore,
+    today: NaiveDate,
+    year: i32,
+    area: Rect,
+) {
+    let year_start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap_or(today);
+    let year_end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap_or(today);
+    let range_end = if year_end > today { today } else { year_end };
     let mut total_completions: u64 = 0;
     let mut active_days = std::collections::BTreeSet::<NaiveDate>::new();
     for h in &store.habits {
         if !matches!(h.kind, HabitKind::Build) {
             continue;
         }
-        for d in h.completions.range(start..=today) {
+        for d in h.completions.range(year_start..=range_end) {
             total_completions += 1;
             active_days.insert(*d);
         }
@@ -1170,7 +1192,7 @@ fn render_global_header(f: &mut Frame, store: &HabitStore, today: NaiveDate, are
         ),
         Span::styled("   ·   ", Style::default().fg(COL_DIM)),
         Span::styled(
-            format!("{} weeks", weeks),
+            format!("year {}", year),
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled("   ·   ", Style::default().fg(COL_DIM)),
@@ -1227,22 +1249,30 @@ fn render_global_summary(f: &mut Frame, store: &HabitStore, today: NaiveDate, ar
     f.render_widget(Paragraph::new(line), area);
 }
 
-fn render_global_grid(f: &mut Frame, store: &HabitStore, today: NaiveDate, area: Rect) {
+fn render_global_grid(
+    f: &mut Frame,
+    store: &HabitStore,
+    today: NaiveDate,
+    year: i32,
+    area: Rect,
+) {
     let weeks: i64 = 26;
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(COL_DIM))
         .title(Span::styled(
-            format!(" Last {} weeks · combined activity ", weeks),
+            format!(" {} · combined activity ", year),
             Style::default().fg(COL_HEADER).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Aggregate Build completions per date.
-    let dow = today.weekday().num_days_from_monday() as i64;
-    let week_end = today + Duration::days(6 - dow);
+    // Anchor to the selected year. Current year ends at today; past years end on Dec 31.
+    let year_end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap_or(today);
+    let anchor = if year == today.year() { today } else { year_end.min(today) };
+    let dow = anchor.weekday().num_days_from_monday() as i64;
+    let week_end = anchor + Duration::days(6 - dow);
     let total_days = weeks * 7;
     let week_start = week_end - Duration::days(total_days - 1);
 
@@ -1251,7 +1281,7 @@ fn render_global_grid(f: &mut Frame, store: &HabitStore, today: NaiveDate, area:
         if !matches!(h.kind, HabitKind::Build) {
             continue;
         }
-        for d in h.completions.range(week_start..=today) {
+        for d in h.completions.range(week_start..=anchor) {
             *counts.entry(*d).or_insert(0) += 1;
         }
     }
@@ -1259,7 +1289,6 @@ fn render_global_grid(f: &mut Frame, store: &HabitStore, today: NaiveDate, area:
 
     let labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(""));
 
     for row in 0..7 {
         let mut spans: Vec<Span> = Vec::with_capacity(weeks as usize + 2);
@@ -1269,10 +1298,13 @@ fn render_global_grid(f: &mut Frame, store: &HabitStore, today: NaiveDate, area:
         ));
         for col in 0..weeks as usize {
             let date = week_start + Duration::days((col as i64) * 7 + row as i64);
-            spans.push(global_cell(date, today, &counts, max_count));
+            spans.push(global_cell(date, today, year, &counts, max_count));
             spans.push(Span::raw(" "));
         }
         lines.push(Line::from(spans));
+        if row < 6 {
+            lines.push(Line::from(""));
+        }
     }
 
     lines.push(Line::from(""));
@@ -1284,11 +1316,15 @@ fn render_global_grid(f: &mut Frame, store: &HabitStore, today: NaiveDate, area:
 fn global_cell(
     date: NaiveDate,
     today: NaiveDate,
+    year: i32,
     counts: &BTreeMap<NaiveDate, u32>,
     max_count: u32,
 ) -> Span<'static> {
     if date > today {
         return Span::styled("  ", Style::default());
+    }
+    if date.year() != year {
+        return Span::styled(CELL, Style::default().fg(Color::Rgb(28, 30, 36)));
     }
     let n = counts.get(&date).copied().unwrap_or(0);
     let level = if max_count == 0 || n == 0 {

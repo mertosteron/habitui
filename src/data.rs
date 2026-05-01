@@ -366,6 +366,15 @@ impl Habit {
         let period = self.period_days() as i64;
         let mut streak = 0u32;
         let mut window_end = today;
+        let today_window_start = today - Duration::days(period - 1);
+        let today_hit = self
+            .completions
+            .range(today_window_start..=today)
+            .next()
+            .is_some();
+        if !today_hit {
+            window_end = today - Duration::days(1);
+        }
         loop {
             let window_start = window_end - Duration::days(period - 1);
             let hit = self
