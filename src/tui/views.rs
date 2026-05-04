@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Sparkline, Wrap,
+    Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Sparkline, Table, TableState, Wrap,
 };
 use ratatui::Frame;
 
@@ -16,16 +16,20 @@ use crate::tui::app::{
 };
 
 const CELL: &str = "\u{2588}\u{2588}"; // "██"
-const CELL_HALF: &str = "\u{2592}\u{2592}"; // shaded block, used for "logged failure"
+const CELL_HALF: &str = "\u{2592}\u{2592}"; // shaded block
 
-// Color category palette (action grouping for footer + motivation).
-const COL_NAV: Color = Color::Rgb(120, 170, 220);     // soft blue
-const COL_MUT: Color = Color::Rgb(120, 200, 140);     // muted green
-const COL_DANGER: Color = Color::Rgb(220, 110, 110);  // soft red
-const COL_QUIT_BG: Color = Color::Rgb(180, 180, 180); // gray
-const COL_DIM: Color = Color::Rgb(110, 110, 130);     // dimmer separators
-const COL_ACCENT: Color = Color::Rgb(245, 200, 90);   // honeyed amber
-const COL_HEADER: Color = Color::Rgb(180, 200, 240);
+// Phosphor green terminal palette.
+const C_GREEN: Color = Color::Rgb(80, 240, 130);
+const C_GREEN_DIM: Color = Color::Rgb(50, 160, 90);
+const C_GREEN_DARK: Color = Color::Rgb(30, 90, 55);
+const C_GREEN_FAINT: Color = Color::Rgb(20, 55, 35);
+const C_GREEN_BG: Color = Color::Rgb(12, 38, 24);
+const C_TEXT: Color = Color::Rgb(150, 230, 170);
+const C_TEXT_DIM: Color = Color::Rgb(80, 130, 95);
+const C_RED: Color = Color::Rgb(230, 95, 95);
+const C_AMBER: Color = Color::Rgb(240, 190, 90);
+
+const PROGRESS_DAYS: i64 = 30;
 
 pub fn render(f: &mut Frame, app: &mut App) {
     match &app.screen {
@@ -59,213 +63,347 @@ pub fn render_resize_notice(f: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             "Please resize to at least 80x24",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default().fg(C_AMBER).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from("(Press Ctrl-C to quit.)"),
+        Line::from(Span::styled(
+            "(Press Ctrl-C to quit.)",
+            Style::default().fg(C_TEXT_DIM),
+        )),
     ])
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
     f.render_widget(msg, area);
 }
 
+// ---------- List screen ----------
+
 fn render_list(f: &mut Frame, app: &mut App) {
+    let outer = f.area();
+
+    // Side gutters give the screen breathing room, like the reference.
+    let h_pad = (outer.width / 24).max(2);
+    let inner_w = outer.width.saturating_sub(h_pad * 2);
+    let inner = Rect::new(outer.x + h_pad, outer.y + 1, inner_w, outer.height.saturating_sub(2));
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // title
-            Constraint::Min(3),    // list
+            Constraint::Length(1), // HABITUI title
+            Constraint::Length(1), // date subtitle
+            Constraint::Length(2), // spacer
+            Constraint::Length(1), // column headers
+            Constraint::Length(1), // spacer
+            Constraint::Min(3),    // habit table
             Constraint::Length(1), // status (transient)
-            Constraint::Length(1), // keybindings
+            Constraint::Length(1), // footer status bar
         ])
-        .split(f.area());
+        .split(inner);
 
-    let title = Paragraph::new(Line::from(Span::styled(
-        "Habitui",
-        Style::default()
-            .fg(COL_ACCENT)
-            .add_modifier(Modifier::BOLD),
-    )));
-    f.render_widget(title, chunks[0]);
-
-    let header = "  NAME                          FREQUENCY        STREAK    TODAY";
-    let mut items: Vec<ListItem> = Vec::with_capacity(app.store.habits.len() + 1);
-    items.push(ListItem::new(Line::from(Span::styled(
-        header,
-        Style::default().fg(Color::DarkGray),
-    ))));
-
-    if app.store.habits.is_empty() {
-        items.push(ListItem::new(Line::from(Span::styled(
-            "  (no habits yet — press [a] to add one)",
-            Style::default().fg(Color::DarkGray),
-        ))));
-    } else {
-        for h in &app.store.habits {
-            items.push(ListItem::new(habit_row(h, app.today)));
-        }
-    }
-
-    let mut list_state = ListState::default();
-    if !app.store.habits.is_empty() {
-        list_state.select(Some(app.selected + 1)); // +1 for header row
-    }
-
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(COL_DIM))
-                .title(Span::styled(
-                    " Habits ",
-                    Style::default().fg(COL_HEADER).add_modifier(Modifier::BOLD),
-                )),
-        )
-        .highlight_style(
+    // Title
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "HABITUI",
             Style::default()
-                .bg(Color::Rgb(40, 45, 60))
+                .fg(C_GREEN)
                 .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("› ");
-    f.render_stateful_widget(list, chunks[1], &mut list_state);
+        ))),
+        chunks[0],
+    );
 
-    // Status: transient one-keypress-lifetime feedback.
+    // Date subtitle
+    let date_line = format_long_date(app.today).to_uppercase();
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            date_line,
+            Style::default().fg(C_GREEN_DIM),
+        ))),
+        chunks[1],
+    );
+
+    // Habit table
+    render_habit_table(f, app, chunks[3], chunks[5]);
+
+    // Transient status
     let status_line: Line = match &app.status {
         Some(msg) => Line::from(Span::styled(
             msg.clone(),
-            Style::default().fg(COL_ACCENT),
+            Style::default().fg(C_AMBER),
         )),
         None => Line::from(""),
     };
-    f.render_widget(Paragraph::new(status_line), chunks[2]);
+    f.render_widget(Paragraph::new(status_line), chunks[6]);
 
-    // Keybindings bar — context-aware: show [f] when current habit is Quit.
+    // Footer status bar
+    f.render_widget(render_status_bar(app), chunks[7]);
+}
+
+fn render_habit_table(f: &mut Frame, app: &mut App, header_area: Rect, body_area: Rect) {
+    let name_w: u16 = 22;
+    let progress_w: u16 = (PROGRESS_DAYS as u16) + 2;
+    let streak_w: u16 = 10;
+
+    // Column headers (rendered above the table for full control over spacing).
+    // Gutter width matches the table's highlight_symbol width below ("▶  " = 3).
+    let header_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(3), // selection arrow gutter
+            Constraint::Length(name_w),
+            Constraint::Length(progress_w),
+            Constraint::Min(streak_w),
+        ])
+        .split(header_area);
+
+    let header_style = Style::default().fg(C_TEXT_DIM).add_modifier(Modifier::BOLD);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled("HABIT", header_style))),
+        header_layout[1],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled("30-DAY PROGRESS", header_style))),
+        header_layout[2],
+    );
+    f.render_widget(
+        Paragraph::new(
+            Line::from(Span::styled("STREAK", header_style))
+                .alignment(Alignment::Right),
+        ),
+        header_layout[3],
+    );
+
+    // Body rows
+    if app.store.habits.is_empty() {
+        let empty = Paragraph::new(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                "(no habits yet — press [a] to add one)",
+                Style::default().fg(C_TEXT_DIM),
+            ),
+        ]));
+        f.render_widget(empty, body_area);
+        return;
+    }
+
+    let rows: Vec<Row> = app
+        .store
+        .habits
+        .iter()
+        .map(|h| habit_row(h, app.today, name_w as usize, PROGRESS_DAYS as usize))
+        .collect();
+
+    let widths = [
+        Constraint::Length(name_w),
+        Constraint::Length(progress_w),
+        Constraint::Min(streak_w),
+    ];
+    let table = Table::new(rows, widths)
+        .column_spacing(0)
+        .highlight_style(
+            Style::default()
+                .bg(C_GREEN_BG)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(Span::styled(
+            "▶  ",
+            Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD),
+        ));
+
+    let mut state = TableState::default();
+    state.select(Some(app.selected));
+    f.render_stateful_widget(table, body_area, &mut state);
+}
+
+fn habit_row(h: &Habit, today: NaiveDate, name_w: usize, days: usize) -> Row<'static> {
+    let is_quit = matches!(h.kind, HabitKind::Quit { .. });
+
+    // Status dot/diamond before the name.
+    let (dot, dot_color) = if is_quit {
+        ("◆", C_GREEN_DIM)
+    } else {
+        ("●", C_GREEN)
+    };
+
+    // Name truncated/padded.
+    let name = truncate(&h.name, name_w.saturating_sub(3));
+
+    let name_line = Line::from(vec![
+        Span::styled(dot, Style::default().fg(dot_color)),
+        Span::raw(" "),
+        Span::styled(
+            name,
+            Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
+    // 30-day progress bar.
+    let progress_line = Line::from(progress_bar_spans(h, today, days));
+
+    // Streak / days-free.
+    let streak_line = streak_line(h, today, is_quit);
+
+    Row::new(vec![
+        Cell::from(name_line),
+        Cell::from(progress_line),
+        Cell::from(streak_line.alignment(Alignment::Right)),
+    ])
+    .height(1)
+}
+
+fn progress_bar_spans(h: &Habit, today: NaiveDate, days: usize) -> Vec<Span<'static>> {
+    let is_quit = matches!(h.kind, HabitKind::Quit { .. });
+    let start = today - Duration::days(days as i64 - 1);
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(days);
+    let mut d = start;
+    for _ in 0..days {
+        let span = if d < h.created_at {
+            Span::styled("░", Style::default().fg(C_GREEN_FAINT))
+        } else {
+            let good = match &h.kind {
+                HabitKind::Build => h.completions.contains(&d),
+                HabitKind::Quit { failures } => !failures.contains(&d),
+            };
+            if good {
+                Span::styled("█", Style::default().fg(C_GREEN))
+            } else if is_quit {
+                Span::styled("█", Style::default().fg(C_RED))
+            } else {
+                Span::styled("▒", Style::default().fg(C_GREEN_DARK))
+            }
+        };
+        spans.push(span);
+        d = d + Duration::days(1);
+    }
+    spans
+}
+
+fn streak_line(h: &Habit, today: NaiveDate, is_quit: bool) -> Line<'static> {
+    let streak = h.current_streak(today);
+    if is_quit {
+        Line::from(vec![Span::styled(
+            format!("{}d free", streak),
+            Style::default().fg(C_GREEN_DIM),
+        )])
+    } else if streak == 0 {
+        Line::from(vec![Span::styled(
+            "—",
+            Style::default().fg(C_TEXT_DIM),
+        )])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                format!("{}", streak),
+                Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("🔥"),
+        ])
+    }
+}
+
+fn render_status_bar<'a>(app: &App) -> Paragraph<'a> {
+    // Total Build habits scheduled today: anything that's due *or* already
+    // completed today. `is_due` returns false once a habit has been completed,
+    // so we OR the two to get the true scheduled count.
+    let scheduled_today = app
+        .store
+        .habits
+        .iter()
+        .filter(|h| {
+            matches!(h.kind, HabitKind::Build)
+                && (h.is_due(app.today) || h.completions.contains(&app.today))
+        })
+        .count();
+    let done_today = app
+        .store
+        .habits
+        .iter()
+        .filter(|h| {
+            matches!(h.kind, HabitKind::Build) && h.completions.contains(&app.today)
+        })
+        .count();
+
     let current_is_quit = app
         .store
         .habits
         .get(app.selected)
         .map(|h| matches!(h.kind, HabitKind::Quit { .. }))
         .unwrap_or(false);
-    let footer = render_footer(current_is_quit);
-    f.render_widget(footer, chunks[3]);
-}
 
-fn habit_row(h: &Habit, today: NaiveDate) -> Line<'static> {
-    let name = pad(&h.name, 30);
-    let freq = pad(&format_frequency(h.frequency), 16);
-    let streak = h.current_streak(today);
-    let is_quit = matches!(h.kind, HabitKind::Quit { .. });
+    let sep = "    ";
 
-    // Streak with motivation glyph that intensifies with thresholds.
-    let (glyph, glyph_color) = streak_glyph(streak, is_quit);
-    let streak_str = format!("{}{:<5}", glyph, streak);
-
-    // TODAY column varies by kind/frequency.
-    let (today_glyph, today_color) = today_indicator(h, today);
-
-    Line::from(vec![
-        Span::raw("  "),
-        Span::raw(name),
-        Span::raw(freq),
-        Span::styled(streak_str, Style::default().fg(glyph_color).add_modifier(Modifier::BOLD)),
-        Span::raw("   "),
-        Span::styled(today_glyph, Style::default().fg(today_color)),
-    ])
-}
-
-/// Returns (glyph, color) for streak motivation tier.
-/// Tiers: 0 (gray dot), 1-2 (dim), 3+ (spark), 7+ (flame), 14+ (bright flame),
-/// 30+ (amber), 100+ (gold).
-fn streak_glyph(streak: u32, is_quit: bool) -> (&'static str, Color) {
-    // Quit habits use a different glyph (◆ / shield) so the visual category reads differently.
-    let g = if is_quit {
-        match streak {
-            0 => "·",
-            1..=2 => "◇",
-            3..=6 => "◆",
-            7..=13 => "◆",
-            14..=29 => "◆",
-            30..=99 => "◆",
-            _ => "◆",
-        }
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::styled(
+        "HABITUI v1.0",
+        Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(sep, Style::default().fg(C_GREEN_DARK)));
+    spans.push(Span::styled(
+        format!("{}", app.today),
+        Style::default().fg(C_GREEN_DIM),
+    ));
+    spans.push(Span::styled(sep, Style::default().fg(C_GREEN_DARK)));
+    spans.push(Span::styled(
+        format!("{}/{} today", done_today, scheduled_today),
+        Style::default().fg(C_GREEN_DIM),
+    ));
+    spans.push(Span::styled(sep, Style::default().fg(C_GREEN_DARK)));
+    extend_spans(&mut spans, key_hint("↑↓/jk", "NAV"));
+    spans.push(Span::raw(" "));
+    if current_is_quit {
+        extend_spans(&mut spans, key_hint("F", "FAIL"));
     } else {
-        match streak {
-            0 => "·",
-            1..=2 => "•",
-            3..=6 => "✦",
-            7..=13 => "✦",
-            14..=29 => "✦",
-            30..=99 => "✦",
-            _ => "✦",
-        }
-    };
-    let color = match streak {
-        0 => Color::DarkGray,
-        1..=2 => Color::Rgb(140, 140, 160),
-        3..=6 => Color::Rgb(180, 200, 140),       // soft green
-        7..=13 => Color::Rgb(220, 200, 100),      // mellow yellow
-        14..=29 => Color::Rgb(240, 170, 90),      // amber
-        30..=99 => Color::Rgb(245, 130, 90),      // orange-red
-        _ => Color::Rgb(245, 90, 130),            // hot pink (legendary)
-    };
-    (g, color)
-}
-
-fn today_indicator(h: &Habit, today: NaiveDate) -> (String, Color) {
-    match (&h.kind, h.frequency) {
-        (HabitKind::Quit { failures }, _) => {
-            if failures.contains(&today) {
-                ("✗ failed".to_string(), COL_DANGER)
-            } else {
-                ("clean".to_string(), Color::Rgb(140, 200, 160))
-            }
-        }
-        (HabitKind::Build, Frequency::NTimesPerWeek(n)) => {
-            let monday = iso_week_monday(today);
-            let sunday = monday + Duration::days(6);
-            let count = h.completions.range(monday..=sunday).count() as u32;
-            let color = if count >= n {
-                Color::Rgb(140, 200, 160)
-            } else {
-                Color::Rgb(200, 180, 100)
-            };
-            (format!("{}/{} wk", count, n), color)
-        }
-        (HabitKind::Build, _) => {
-            let done = h.completions.contains(&today);
-            if done {
-                ("✓".to_string(), Color::Rgb(140, 200, 160))
-            } else if h.is_due(today) {
-                ("·".to_string(), Color::DarkGray)
-            } else {
-                // satisfied via prior in-window completion
-                ("✓".to_string(), Color::Rgb(120, 170, 200))
-            }
-        }
+        extend_spans(&mut spans, key_hint("SPACE", "CHECK"));
     }
+    spans.push(Span::raw(" "));
+    extend_spans(&mut spans, key_hint("ENTER", "GRAPH"));
+    spans.push(Span::raw(" "));
+    extend_spans(&mut spans, key_hint("A", "ADD"));
+    spans.push(Span::raw(" "));
+    extend_spans(&mut spans, key_hint("E", "EDIT"));
+    spans.push(Span::raw(" "));
+    extend_spans(&mut spans, key_hint("D", "DEL"));
+    spans.push(Span::raw(" "));
+    extend_spans(&mut spans, key_hint("G", "GLOBAL"));
+
+    Paragraph::new(Line::from(spans))
 }
 
-fn iso_week_monday(date: NaiveDate) -> NaiveDate {
-    let off = date.weekday().num_days_from_monday() as i64;
-    date - Duration::days(off)
+fn key_hint<'a>(key: &str, label: &str) -> Vec<Span<'a>> {
+    vec![
+        Span::styled(
+            key.to_string(),
+            Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            label.to_string(),
+            Style::default().fg(C_TEXT_DIM),
+        ),
+    ]
 }
 
-fn pad(s: &str, width: usize) -> String {
+fn extend_spans<'a>(out: &mut Vec<Span<'a>>, parts: Vec<Span<'a>>) {
+    out.extend(parts);
+}
+
+// ---------- helpers ----------
+
+fn truncate(s: &str, width: usize) -> String {
     let mut out = String::new();
     let mut len = 0;
     for c in s.chars() {
-        if len >= width {
+        if len + 1 > width {
             break;
         }
         out.push(c);
         len += 1;
     }
-    while len < width {
-        out.push(' ');
-        len += 1;
-    }
     out
+}
+
+fn format_long_date(d: NaiveDate) -> String {
+    // e.g. "Friday, May 1, 2026"
+    d.format("%A, %B %-d, %Y").to_string()
 }
 
 fn format_frequency(f: Frequency) -> String {
@@ -282,58 +420,6 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     Rect::new(x, y, w, h)
-}
-
-// ---------- Footer / keybindings bar ----------
-
-fn render_footer<'a>(quit_habit_selected: bool) -> Paragraph<'a> {
-    // Each binding rendered as `[K] label`, color-coded by category, joined
-    // by a subdued middle-dot. Single line, professional.
-    let sep = Span::styled(" · ", Style::default().fg(COL_DIM));
-
-    let toggle = if quit_habit_selected {
-        keybinding("f", "fail/clear", COL_DANGER)
-    } else {
-        keybinding("␣", "toggle", COL_MUT)
-    };
-
-    let mut spans: Vec<Span> = Vec::new();
-    extend_spans(&mut spans, keybinding("j/k", "move", COL_NAV));
-    spans.push(sep.clone());
-    extend_spans(&mut spans, keybinding("⏎", "detail", COL_NAV));
-    spans.push(sep.clone());
-    extend_spans(&mut spans, keybinding("g", "global", COL_NAV));
-    spans.push(sep.clone());
-    extend_spans(&mut spans, toggle);
-    spans.push(sep.clone());
-    extend_spans(&mut spans, keybinding("a", "add", COL_MUT));
-    spans.push(sep.clone());
-    extend_spans(&mut spans, keybinding("e", "edit", COL_MUT));
-    spans.push(sep.clone());
-    extend_spans(&mut spans, keybinding("d", "delete", COL_DANGER));
-    spans.push(sep.clone());
-    extend_spans(&mut spans, keybinding("[/]", "year", COL_NAV));
-    spans.push(sep);
-    extend_spans(&mut spans, keybinding("q", "quit", COL_QUIT_BG));
-
-    Paragraph::new(Line::from(spans))
-}
-
-fn extend_spans<'a>(out: &mut Vec<Span<'a>>, parts: Vec<Span<'a>>) {
-    out.extend(parts);
-}
-
-fn keybinding<'a>(key: &str, label: &str, color: Color) -> Vec<Span<'a>> {
-    vec![
-        Span::styled("[", Style::default().fg(COL_DIM)),
-        Span::styled(
-            key.to_string(),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("]", Style::default().fg(COL_DIM)),
-        Span::raw(" "),
-        Span::styled(label.to_string(), Style::default().fg(Color::Rgb(180, 180, 195))),
-    ]
 }
 
 // ---------- Add form ----------
@@ -353,10 +439,10 @@ fn render_add_form(f: &mut Frame, form: &AddForm) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(COL_HEADER))
+        .border_style(Style::default().fg(C_GREEN))
         .title(Span::styled(
-            " New habit ",
-            Style::default().fg(COL_HEADER).add_modifier(Modifier::BOLD),
+            " NEW HABIT ",
+            Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -365,15 +451,15 @@ fn render_add_form(f: &mut Frame, form: &AddForm) {
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // name label
-                Constraint::Length(1), // name input
-                Constraint::Length(1), // gap
-                Constraint::Length(1), // kind label
-                Constraint::Length(1), // kind picker
-                Constraint::Length(1), // gap
-                Constraint::Length(1), // implicit-daily note
-                Constraint::Length(1), // gap
-                Constraint::Min(1),    // help / error
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
             ])
             .split(inner);
 
@@ -389,17 +475,17 @@ fn render_add_form(f: &mut Frame, form: &AddForm) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // name label
-            Constraint::Length(1), // name input
-            Constraint::Length(1), // gap
-            Constraint::Length(1), // kind label
-            Constraint::Length(1), // kind picker
-            Constraint::Length(1), // gap
-            Constraint::Length(1), // freq label
-            Constraint::Length(1), // freq picker
-            Constraint::Length(1), // numeric (when applicable)
-            Constraint::Length(1), // gap
-            Constraint::Min(1),    // help / error
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
         ])
         .split(inner);
 
@@ -424,11 +510,11 @@ fn render_add_form(f: &mut Frame, form: &AddForm) {
 
 fn quit_implicit_daily_note<'a>() -> Paragraph<'a> {
     Paragraph::new(Line::from(vec![
-        Span::styled("  Frequency: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Frequency: ", Style::default().fg(C_TEXT_DIM)),
         Span::styled(
             "Daily (implicit for Quit habits)",
             Style::default()
-                .fg(Color::Rgb(180, 180, 195))
+                .fg(C_TEXT)
                 .add_modifier(Modifier::ITALIC),
         ),
     ]))
@@ -450,10 +536,10 @@ fn render_edit_form(f: &mut Frame, form: &EditForm) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(COL_ACCENT))
+        .border_style(Style::default().fg(C_AMBER))
         .title(Span::styled(
-            " Edit habit ",
-            Style::default().fg(COL_ACCENT).add_modifier(Modifier::BOLD),
+            " EDIT HABIT ",
+            Style::default().fg(C_AMBER).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -462,15 +548,15 @@ fn render_edit_form(f: &mut Frame, form: &EditForm) {
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // name label
-                Constraint::Length(1), // name input
-                Constraint::Length(1), // gap
-                Constraint::Length(1), // kind (read-only)
-                Constraint::Length(1), // kind value
-                Constraint::Length(1), // gap
-                Constraint::Length(1), // implicit-daily note
-                Constraint::Length(1), // gap
-                Constraint::Min(1),    // help / error
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
             ])
             .split(inner);
 
@@ -482,7 +568,7 @@ fn render_edit_form(f: &mut Frame, form: &EditForm) {
                 Span::raw(" "),
                 Span::styled(
                     form.kind_label,
-                    Style::default().fg(Color::Rgb(180, 180, 195)).add_modifier(Modifier::ITALIC),
+                    Style::default().fg(C_TEXT).add_modifier(Modifier::ITALIC),
                 ),
             ])),
             layout[4],
@@ -495,17 +581,17 @@ fn render_edit_form(f: &mut Frame, form: &EditForm) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // name label
-            Constraint::Length(1), // name input
-            Constraint::Length(1), // gap
-            Constraint::Length(1), // kind (read-only)
-            Constraint::Length(1), // kind value
-            Constraint::Length(1), // gap
-            Constraint::Length(1), // freq label
-            Constraint::Length(1), // freq picker
-            Constraint::Length(1), // numeric (when applicable)
-            Constraint::Length(1), // gap
-            Constraint::Min(1),    // help / error
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
         ])
         .split(inner);
 
@@ -518,7 +604,7 @@ fn render_edit_form(f: &mut Frame, form: &EditForm) {
             Span::raw(" "),
             Span::styled(
                 form.kind_label,
-                Style::default().fg(Color::Rgb(180, 180, 195)).add_modifier(Modifier::ITALIC),
+                Style::default().fg(C_TEXT).add_modifier(Modifier::ITALIC),
             ),
         ])),
         layout[4],
@@ -539,21 +625,21 @@ fn render_edit_form(f: &mut Frame, form: &EditForm) {
 
 fn field_label<'a>(text: &'a str, focused: bool) -> Paragraph<'a> {
     let style = if focused {
-        Style::default().fg(COL_HEADER).add_modifier(Modifier::BOLD)
+        Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(C_TEXT_DIM)
     };
     Paragraph::new(Span::styled(text, style))
 }
 
 fn name_paragraph<'a>(name: &'a str, focused: bool) -> Paragraph<'a> {
     let display = if name.is_empty() {
-        Span::styled(" <type a name>", Style::default().fg(Color::DarkGray))
+        Span::styled(" <type a name>", Style::default().fg(C_TEXT_DIM))
     } else {
-        Span::raw(format!(" {}", name))
+        Span::styled(format!(" {}", name), Style::default().fg(C_TEXT))
     };
     let style = if focused {
-        Style::default().bg(Color::Rgb(40, 45, 60))
+        Style::default().bg(C_GREEN_BG)
     } else {
         Style::default()
     };
@@ -570,10 +656,10 @@ fn kind_picker<'a>(choice: KindChoice) -> Paragraph<'a> {
         let style = if selected {
             Style::default()
                 .fg(Color::Black)
-                .bg(COL_ACCENT)
+                .bg(C_GREEN)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(C_TEXT_DIM)
         };
         spans.push(Span::styled(label, style));
         spans.push(Span::raw(" "));
@@ -593,10 +679,10 @@ fn freq_picker<'a>(choice: FrequencyChoice) -> Paragraph<'a> {
         let style = if selected {
             Style::default()
                 .fg(Color::Black)
-                .bg(COL_HEADER)
+                .bg(C_GREEN)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(C_TEXT_DIM)
         };
         spans.push(Span::styled(label, style));
         spans.push(Span::raw(" "));
@@ -611,19 +697,19 @@ fn numeric_field<'a>(choice: FrequencyChoice, buf: &str, focused: bool) -> Parag
         _ => "N",
     };
     let label_style = if focused {
-        Style::default().fg(COL_HEADER).add_modifier(Modifier::BOLD)
+        Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(C_TEXT_DIM)
     };
     let value_style = if focused {
         Style::default()
-            .bg(Color::Rgb(40, 45, 60))
+            .bg(C_GREEN_BG)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default()
+        Style::default().fg(C_TEXT)
     };
     let value_display = if buf.is_empty() {
-        Span::styled(" _ ", Style::default().fg(Color::DarkGray))
+        Span::styled(" _ ", Style::default().fg(C_TEXT_DIM))
     } else {
         Span::styled(format!(" {} ", buf), value_style)
     };
@@ -632,7 +718,7 @@ fn numeric_field<'a>(choice: FrequencyChoice, buf: &str, focused: bool) -> Parag
         value_display,
         Span::styled(
             "  digits to type · backspace to clear",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(C_TEXT_DIM),
         ),
     ]))
 }
@@ -641,11 +727,11 @@ fn form_help<'a>(err: Option<&'a str>, fallback: &'a str) -> Paragraph<'a> {
     let line = match err {
         Some(e) => Line::from(Span::styled(
             e.to_string(),
-            Style::default().fg(COL_DANGER).add_modifier(Modifier::BOLD),
+            Style::default().fg(C_RED).add_modifier(Modifier::BOLD),
         )),
         None => Line::from(Span::styled(
             fallback.to_string(),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(C_TEXT_DIM),
         )),
     };
     Paragraph::new(line)
@@ -666,10 +752,10 @@ fn render_confirm_delete(f: &mut Frame, app: &App, habit_id: u64) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(COL_DANGER))
+        .border_style(Style::default().fg(C_RED))
         .title(Span::styled(
-            " Confirm delete ",
-            Style::default().fg(COL_DANGER).add_modifier(Modifier::BOLD),
+            " CONFIRM DELETE ",
+            Style::default().fg(C_RED).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -677,16 +763,16 @@ fn render_confirm_delete(f: &mut Frame, app: &App, habit_id: u64) {
     let lines = vec![
         Line::from(""),
         Line::from(vec![
-            Span::raw("Delete \""),
-            Span::styled(name, Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("\" ?"),
+            Span::styled("Delete \"", Style::default().fg(C_TEXT)),
+            Span::styled(name, Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled("\" ?", Style::default().fg(C_TEXT)),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("[y] ", Style::default().fg(COL_DANGER).add_modifier(Modifier::BOLD)),
-            Span::styled("yes  ", Style::default().fg(Color::Rgb(180, 180, 195))),
-            Span::styled("[n] ", Style::default().fg(COL_NAV).add_modifier(Modifier::BOLD)),
-            Span::styled("no", Style::default().fg(Color::Rgb(180, 180, 195))),
+            Span::styled("[Y] ", Style::default().fg(C_RED).add_modifier(Modifier::BOLD)),
+            Span::styled("yes  ", Style::default().fg(C_TEXT)),
+            Span::styled("[N] ", Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled("no", Style::default().fg(C_TEXT)),
         ]),
     ];
     f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
@@ -700,7 +786,11 @@ fn render_detail(f: &mut Frame, app: &App, state: &DetailState) {
         Some(h) => h,
         None => {
             f.render_widget(
-                Paragraph::new("Habit not found. Press q to return.").alignment(Alignment::Center),
+                Paragraph::new(Span::styled(
+                    "Habit not found. Press q to return.",
+                    Style::default().fg(C_TEXT),
+                ))
+                .alignment(Alignment::Center),
                 area,
             );
             return;
@@ -710,12 +800,12 @@ fn render_detail(f: &mut Frame, app: &App, state: &DetailState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // header card
-            Constraint::Length(2), // affirmation
-            Constraint::Length(5), // sparkline strip (last 30 days)
-            Constraint::Min(10),   // binary calendar
-            Constraint::Length(1), // status
-            Constraint::Length(1), // footer
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Length(5),
+            Constraint::Min(10),
+            Constraint::Length(1),
+            Constraint::Length(1),
         ])
         .split(area);
 
@@ -727,7 +817,7 @@ fn render_detail(f: &mut Frame, app: &App, state: &DetailState) {
     let status_line = match &app.status {
         Some(msg) => Line::from(Span::styled(
             format!("  {}", msg),
-            Style::default().fg(COL_ACCENT),
+            Style::default().fg(C_AMBER),
         )),
         None => Line::from(""),
     };
@@ -739,29 +829,29 @@ fn render_detail(f: &mut Frame, app: &App, state: &DetailState) {
                 "  EDIT ",
                 Style::default()
                     .fg(Color::Black)
-                    .bg(COL_ACCENT)
+                    .bg(C_AMBER)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::styled("[←↑↓→] ", Style::default().fg(COL_NAV).add_modifier(Modifier::BOLD)),
-            Span::styled("move", Style::default().fg(Color::Rgb(180, 180, 195))),
-            Span::styled("   ·   ", Style::default().fg(COL_DIM)),
-            Span::styled("[space] ", Style::default().fg(COL_MUT).add_modifier(Modifier::BOLD)),
-            Span::styled("toggle", Style::default().fg(Color::Rgb(180, 180, 195))),
-            Span::styled("   ·   ", Style::default().fg(COL_DIM)),
-            Span::styled("[e/esc] ", Style::default().fg(COL_DANGER).add_modifier(Modifier::BOLD)),
-            Span::styled("exit edit", Style::default().fg(Color::Rgb(180, 180, 195))),
+            Span::styled("←↑↓→ ", Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled("MOVE", Style::default().fg(C_TEXT_DIM)),
+            Span::styled("    ", Style::default()),
+            Span::styled("SPACE ", Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled("TOGGLE", Style::default().fg(C_TEXT_DIM)),
+            Span::styled("    ", Style::default()),
+            Span::styled("E/ESC ", Style::default().fg(C_RED).add_modifier(Modifier::BOLD)),
+            Span::styled("EXIT EDIT", Style::default().fg(C_TEXT_DIM)),
         ]))
     } else {
         Paragraph::new(Line::from(vec![
-            Span::styled("  [esc/q/⏎] ", Style::default().fg(COL_NAV).add_modifier(Modifier::BOLD)),
-            Span::styled("back", Style::default().fg(Color::Rgb(180, 180, 195))),
-            Span::styled("   ·   ", Style::default().fg(COL_DIM)),
-            Span::styled("[e] ", Style::default().fg(COL_MUT).add_modifier(Modifier::BOLD)),
-            Span::styled("edit past days", Style::default().fg(Color::Rgb(180, 180, 195))),
-            Span::styled("   ·   ", Style::default().fg(COL_DIM)),
-            Span::styled("[ / ] ", Style::default().fg(COL_NAV).add_modifier(Modifier::BOLD)),
-            Span::styled("year", Style::default().fg(Color::Rgb(180, 180, 195))),
+            Span::styled("  ESC/Q/ENTER ", Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled("BACK", Style::default().fg(C_TEXT_DIM)),
+            Span::styled("    ", Style::default()),
+            Span::styled("E ", Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled("EDIT PAST DAYS", Style::default().fg(C_TEXT_DIM)),
+            Span::styled("    ", Style::default()),
+            Span::styled("[ / ] ", Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled("YEAR", Style::default().fg(C_TEXT_DIM)),
         ]))
     };
     f.render_widget(footer, chunks[5]);
@@ -770,22 +860,21 @@ fn render_detail(f: &mut Frame, app: &App, state: &DetailState) {
 fn render_recent_strip(f: &mut Frame, habit: &Habit, today: NaiveDate, year: i32, area: Rect) {
     let is_quit = matches!(habit.kind, HabitKind::Quit { .. });
     let title = if is_quit {
-        format!(" {} · failures by day ", year)
+        format!(" {} · FAILURES BY DAY ", year)
     } else {
-        format!(" {} · activity by day ", year)
+        format!(" {} · ACTIVITY BY DAY ", year)
     };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(COL_DIM))
+        .border_style(Style::default().fg(C_GREEN_DARK))
         .title(Span::styled(
             title,
-            Style::default().fg(COL_HEADER).add_modifier(Modifier::BOLD),
+            Style::default().fg(C_GREEN_DIM).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Daily samples for the selected year (Jan 1 .. Dec 31, clipped at today).
     let year_start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap_or(today);
     let year_end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap_or(today);
     let end = if year_end > today { today } else { year_end };
@@ -804,11 +893,7 @@ fn render_recent_strip(f: &mut Frame, habit: &Habit, today: NaiveDate, year: i32
         d = d + Duration::days(1);
     }
 
-    let bar_color = if is_quit {
-        COL_DANGER
-    } else {
-        Color::Rgb(150, 220, 130)
-    };
+    let bar_color = if is_quit { C_RED } else { C_GREEN };
 
     let sparkline = Sparkline::default()
         .data(&data)
@@ -831,28 +916,27 @@ fn render_binary_calendar(
 
     let title = if state.edit_mode {
         format!(
-            " {} · binary view · editing {} ",
+            " {} · BINARY VIEW · EDITING {} ",
             year,
             state.cursor.format("%a %Y-%m-%d")
         )
     } else if is_quit {
-        format!(" {} · binary view · failures ", year)
+        format!(" {} · BINARY VIEW · FAILURES ", year)
     } else {
-        format!(" {} · binary view · done / missed ", year)
+        format!(" {} · BINARY VIEW · DONE / MISSED ", year)
     };
-    let border_color = if state.edit_mode { COL_ACCENT } else { COL_DIM };
+    let border_color = if state.edit_mode { C_AMBER } else { C_GREEN_DARK };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
         .title(Span::styled(
             title,
-            Style::default().fg(COL_HEADER).add_modifier(Modifier::BOLD),
+            Style::default().fg(C_GREEN_DIM).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Anchor to the selected year. Current year uses today; past years end on Dec 31.
     let year_end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap_or(today);
     let anchor = if year == today.year() { today } else { year_end.min(today) };
     let dow = anchor.weekday().num_days_from_monday() as i64;
@@ -860,14 +944,14 @@ fn render_binary_calendar(
     let total_days = weeks * 7;
     let week_start = week_end - Duration::days(total_days - 1);
 
-    let labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let labels = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
     let mut lines: Vec<Line> = Vec::new();
 
     for row in 0..7 {
         let mut spans: Vec<Span> = Vec::with_capacity(weeks as usize + 2);
         spans.push(Span::styled(
             format!(" {}  ", labels[row]),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(C_TEXT_DIM),
         ));
         for col in 0..weeks as usize {
             let date = week_start + Duration::days((col as i64) * 7 + row as i64);
@@ -897,23 +981,21 @@ fn binary_cell(
     let is_quit = matches!(habit.kind, HabitKind::Quit { .. });
 
     if date > today {
-        // future
         if is_cursor {
             return Span::styled(
                 "[]",
-                Style::default().fg(COL_ACCENT).add_modifier(Modifier::BOLD),
+                Style::default().fg(C_AMBER).add_modifier(Modifier::BOLD),
             );
         }
         return Span::styled("  ", Style::default());
     }
     if date.year() != year {
-        // outside selected year
-        let s = Style::default().fg(Color::Rgb(28, 30, 36));
+        let s = Style::default().fg(C_GREEN_FAINT);
         let s = if is_cursor { s.add_modifier(Modifier::REVERSED) } else { s };
         return Span::styled(CELL, s);
     }
     if date < habit.created_at {
-        let s = Style::default().fg(Color::Rgb(40, 42, 50));
+        let s = Style::default().fg(C_GREEN_FAINT);
         let s = if is_cursor { s.add_modifier(Modifier::REVERSED) } else { s };
         return Span::styled(CELL, s);
     }
@@ -925,15 +1007,14 @@ fn binary_cell(
 
     let (glyph, color) = if is_quit {
         if hit {
-            (CELL_HALF, COL_DANGER)
+            (CELL_HALF, C_RED)
         } else {
-            // for a Quit habit, "missed" = clean = good
-            (CELL, Color::Rgb(80, 140, 100))
+            (CELL, C_GREEN_DIM)
         }
     } else if hit {
-        (CELL, Color::Rgb(150, 220, 130))
+        (CELL, C_GREEN)
     } else {
-        (CELL, Color::Rgb(60, 64, 74))
+        (CELL, C_GREEN_DARK)
     };
 
     let mut style = Style::default().fg(color);
@@ -949,24 +1030,24 @@ fn binary_legend(is_quit: bool) -> Line<'static> {
     if is_quit {
         Line::from(vec![
             Span::raw("    "),
-            Span::styled("Legend: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(CELL, Style::default().fg(Color::Rgb(80, 140, 100))),
-            Span::styled(" clean   ", Style::default().fg(Color::DarkGray)),
-            Span::styled(CELL_HALF, Style::default().fg(COL_DANGER)),
-            Span::styled(" failure   ", Style::default().fg(Color::DarkGray)),
-            Span::styled(CELL, Style::default().fg(Color::Rgb(40, 42, 50))),
-            Span::styled(" before created", Style::default().fg(Color::DarkGray)),
+            Span::styled("Legend: ", Style::default().fg(C_TEXT_DIM)),
+            Span::styled(CELL, Style::default().fg(C_GREEN_DIM)),
+            Span::styled(" clean   ", Style::default().fg(C_TEXT_DIM)),
+            Span::styled(CELL_HALF, Style::default().fg(C_RED)),
+            Span::styled(" failure   ", Style::default().fg(C_TEXT_DIM)),
+            Span::styled(CELL, Style::default().fg(C_GREEN_FAINT)),
+            Span::styled(" before created", Style::default().fg(C_TEXT_DIM)),
         ])
     } else {
         Line::from(vec![
             Span::raw("    "),
-            Span::styled("Legend: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(CELL, Style::default().fg(Color::Rgb(150, 220, 130))),
-            Span::styled(" done   ", Style::default().fg(Color::DarkGray)),
-            Span::styled(CELL, Style::default().fg(Color::Rgb(60, 64, 74))),
-            Span::styled(" missed   ", Style::default().fg(Color::DarkGray)),
-            Span::styled(CELL, Style::default().fg(Color::Rgb(40, 42, 50))),
-            Span::styled(" before created", Style::default().fg(Color::DarkGray)),
+            Span::styled("Legend: ", Style::default().fg(C_TEXT_DIM)),
+            Span::styled(CELL, Style::default().fg(C_GREEN)),
+            Span::styled(" done   ", Style::default().fg(C_TEXT_DIM)),
+            Span::styled(CELL, Style::default().fg(C_GREEN_DARK)),
+            Span::styled(" missed   ", Style::default().fg(C_TEXT_DIM)),
+            Span::styled(CELL, Style::default().fg(C_GREEN_FAINT)),
+            Span::styled(" before created", Style::default().fg(C_TEXT_DIM)),
         ])
     }
 }
@@ -980,13 +1061,10 @@ fn render_detail_header(f: &mut Frame, habit: &Habit, today: NaiveDate, area: Re
         HabitKind::Quit { failures } => failures.len(),
     };
 
-    let (glyph, glyph_color) = streak_glyph(current, is_quit);
-    let border_color = motivation_border_color(current);
-
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color));
+        .border_style(Style::default().fg(C_GREEN_DARK));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -1000,7 +1078,7 @@ fn render_detail_header(f: &mut Frame, habit: &Habit, today: NaiveDate, area: Re
             " QUIT ",
             Style::default()
                 .fg(Color::Black)
-                .bg(Color::Rgb(180, 180, 200))
+                .bg(C_GREEN_DIM)
                 .add_modifier(Modifier::BOLD),
         )
     } else {
@@ -1008,7 +1086,7 @@ fn render_detail_header(f: &mut Frame, habit: &Habit, today: NaiveDate, area: Re
             " BUILD ",
             Style::default()
                 .fg(Color::Black)
-                .bg(Color::Rgb(140, 200, 160))
+                .bg(C_GREEN)
                 .add_modifier(Modifier::BOLD),
         )
     };
@@ -1019,70 +1097,56 @@ fn render_detail_header(f: &mut Frame, habit: &Habit, today: NaiveDate, area: Re
         format!("{} day streak", current)
     };
 
+    let dim_sep = Span::styled("   ·   ", Style::default().fg(C_GREEN_DARK));
+
     let line = Line::from(vec![
         kind_tag,
         Span::raw("  "),
         Span::styled(
             habit.name.clone(),
-            Style::default().fg(COL_HEADER).add_modifier(Modifier::BOLD),
+            Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("   ", Style::default()),
-        Span::styled(format_frequency(habit.frequency), Style::default().fg(Color::DarkGray)),
-        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
-        Span::styled(
-            format!("{} ", glyph),
-            Style::default().fg(glyph_color).add_modifier(Modifier::BOLD),
-        ),
+        Span::raw("   "),
+        Span::styled(format_frequency(habit.frequency), Style::default().fg(C_TEXT_DIM)),
+        dim_sep.clone(),
         Span::styled(
             streak_label,
-            Style::default().fg(glyph_color).add_modifier(Modifier::BOLD),
+            Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
-        Span::styled("longest ", Style::default().fg(Color::DarkGray)),
+        dim_sep.clone(),
+        Span::styled("longest ", Style::default().fg(C_TEXT_DIM)),
         Span::styled(
             format!("{}", longest),
-            Style::default().fg(Color::Rgb(200, 200, 220)).add_modifier(Modifier::BOLD),
+            Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
+        dim_sep,
         Span::styled(
             if is_quit { "failures " } else { "total " },
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(C_TEXT_DIM),
         ),
         Span::styled(
             format!("{}", total),
-            Style::default().fg(Color::Rgb(200, 200, 220)).add_modifier(Modifier::BOLD),
+            Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
         ),
     ]);
     f.render_widget(Paragraph::new(line), layout[0]);
 }
 
-fn motivation_border_color(streak: u32) -> Color {
-    match streak {
-        0..=2 => COL_DIM,
-        3..=6 => Color::Rgb(140, 180, 130),
-        7..=13 => Color::Rgb(200, 180, 110),
-        14..=29 => Color::Rgb(230, 160, 100),
-        30..=99 => Color::Rgb(240, 130, 100),
-        _ => Color::Rgb(245, 110, 140),
-    }
-}
-
 fn render_motivation_line(f: &mut Frame, habit: &Habit, today: NaiveDate, area: Rect) {
     let is_quit = matches!(habit.kind, HabitKind::Quit { .. });
     let streak = habit.current_streak(today);
-    let (msg, color) = affirmation(streak, is_quit);
+    let msg = affirmation(streak, is_quit);
     let line = Line::from(vec![
         Span::raw("  "),
         Span::styled(
             msg,
-            Style::default().fg(color).add_modifier(Modifier::ITALIC),
+            Style::default().fg(C_GREEN_DIM).add_modifier(Modifier::ITALIC),
         ),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
 
-fn affirmation(streak: u32, is_quit: bool) -> (String, Color) {
-    let color = motivation_border_color(streak);
+fn affirmation(streak: u32, is_quit: bool) -> String {
     let msg = if is_quit {
         match streak {
             0 => "A reset, not a defeat — start fresh tomorrow.",
@@ -1116,10 +1180,10 @@ fn affirmation(streak: u32, is_quit: bool) -> (String, Color) {
             _ => "Years deep. This is mastery, quietly accumulating.",
         }
     };
-    (msg.to_string(), color)
+    msg.to_string()
 }
 
-// ---------- Global heatmap (across all habits) ----------
+// ---------- Global heatmap ----------
 
 fn render_global_heatmap(f: &mut Frame, app: &App) {
     let area = f.area();
@@ -1127,10 +1191,10 @@ fn render_global_heatmap(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // header
-            Constraint::Length(2), // affirmation
-            Constraint::Min(10),   // heatmap
-            Constraint::Length(1), // footer
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Min(10),
+            Constraint::Length(1),
         ])
         .split(area);
 
@@ -1139,11 +1203,11 @@ fn render_global_heatmap(f: &mut Frame, app: &App) {
     render_global_grid(f, &app.store, app.today, app.year, chunks[2]);
 
     let footer = Paragraph::new(Line::from(vec![
-        Span::styled("  [esc/q/g/⏎] ", Style::default().fg(COL_NAV).add_modifier(Modifier::BOLD)),
-        Span::styled("back to list", Style::default().fg(Color::Rgb(180, 180, 195))),
-        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
-        Span::styled("[ / ] ", Style::default().fg(COL_NAV).add_modifier(Modifier::BOLD)),
-        Span::styled("year", Style::default().fg(Color::Rgb(180, 180, 195))),
+        Span::styled("  ESC/Q/G/ENTER ", Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD)),
+        Span::styled("BACK TO LIST", Style::default().fg(C_TEXT_DIM)),
+        Span::styled("    ", Style::default()),
+        Span::styled("[ / ] ", Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD)),
+        Span::styled("YEAR", Style::default().fg(C_TEXT_DIM)),
     ]));
     f.render_widget(footer, chunks[3]);
 }
@@ -1173,41 +1237,36 @@ fn render_global_header(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(COL_ACCENT));
+        .border_style(Style::default().fg(C_GREEN));
     let inner = block.inner(area);
     f.render_widget(block, area);
+
+    let dim_sep = Span::styled("   ·   ", Style::default().fg(C_GREEN_DARK));
 
     let line = Line::from(vec![
         Span::styled(
             " GLOBAL ",
             Style::default()
                 .fg(Color::Black)
-                .bg(COL_ACCENT)
+                .bg(C_GREEN)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
-            "Activity across all habits",
-            Style::default().fg(COL_HEADER).add_modifier(Modifier::BOLD),
+            "ACTIVITY ACROSS ALL HABITS",
+            Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
-        Span::styled(
-            format!("year {}", year),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
+        dim_sep.clone(),
+        Span::styled(format!("year {}", year), Style::default().fg(C_TEXT_DIM)),
+        dim_sep.clone(),
         Span::styled(
             format!("{} completions", total_completions),
-            Style::default()
-                .fg(Color::Rgb(200, 200, 220))
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
+        dim_sep,
         Span::styled(
             format!("{} active days", active_days.len()),
-            Style::default()
-                .fg(Color::Rgb(200, 200, 220))
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
         ),
     ]);
     f.render_widget(Paragraph::new(line), inner);
@@ -1229,21 +1288,17 @@ fn render_global_summary(f: &mut Frame, store: &HabitStore, today: NaiveDate, ar
         })
         .count();
 
+    let dim_sep = Span::styled("   ·   ", Style::default().fg(C_GREEN_DARK));
+
     let line = Line::from(vec![
         Span::raw("  "),
-        Span::styled(
-            format!("{} build", build_count),
-            Style::default().fg(Color::Rgb(140, 200, 160)),
-        ),
-        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
-        Span::styled(
-            format!("{} quit", quit_count),
-            Style::default().fg(Color::Rgb(200, 180, 220)),
-        ),
-        Span::styled("   ·   ", Style::default().fg(COL_DIM)),
+        Span::styled(format!("{} build", build_count), Style::default().fg(C_GREEN)),
+        dim_sep.clone(),
+        Span::styled(format!("{} quit", quit_count), Style::default().fg(C_GREEN_DIM)),
+        dim_sep,
         Span::styled(
             format!("{} completed today", done_today),
-            Style::default().fg(COL_ACCENT).add_modifier(Modifier::BOLD),
+            Style::default().fg(C_AMBER).add_modifier(Modifier::BOLD),
         ),
     ]);
     f.render_widget(Paragraph::new(line), area);
@@ -1260,15 +1315,14 @@ fn render_global_grid(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(COL_DIM))
+        .border_style(Style::default().fg(C_GREEN_DARK))
         .title(Span::styled(
-            format!(" {} · combined activity ", year),
-            Style::default().fg(COL_HEADER).add_modifier(Modifier::BOLD),
+            format!(" {} · COMBINED ACTIVITY ", year),
+            Style::default().fg(C_GREEN_DIM).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Anchor to the selected year. Current year ends at today; past years end on Dec 31.
     let year_end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap_or(today);
     let anchor = if year == today.year() { today } else { year_end.min(today) };
     let dow = anchor.weekday().num_days_from_monday() as i64;
@@ -1287,14 +1341,14 @@ fn render_global_grid(
     }
     let max_count = counts.values().copied().max().unwrap_or(0);
 
-    let labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let labels = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
     let mut lines: Vec<Line> = Vec::new();
 
     for row in 0..7 {
         let mut spans: Vec<Span> = Vec::with_capacity(weeks as usize + 2);
         spans.push(Span::styled(
             format!(" {}  ", labels[row]),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(C_TEXT_DIM),
         ));
         for col in 0..weeks as usize {
             let date = week_start + Duration::days((col as i64) * 7 + row as i64);
@@ -1324,13 +1378,12 @@ fn global_cell(
         return Span::styled("  ", Style::default());
     }
     if date.year() != year {
-        return Span::styled(CELL, Style::default().fg(Color::Rgb(28, 30, 36)));
+        return Span::styled(CELL, Style::default().fg(C_GREEN_FAINT));
     }
     let n = counts.get(&date).copied().unwrap_or(0);
     let level = if max_count == 0 || n == 0 {
         0
     } else {
-        // Map to 1..=4.
         let ratio = (n as f32) / (max_count as f32);
         if ratio >= 0.75 {
             4
@@ -1347,18 +1400,18 @@ fn global_cell(
 
 fn global_palette(level: u8) -> Color {
     match level {
-        0 => Color::Rgb(38, 42, 52),
-        1 => Color::Rgb(80, 110, 150),
-        2 => Color::Rgb(120, 160, 200),
-        3 => Color::Rgb(180, 200, 240),
-        _ => Color::Rgb(245, 200, 90),
+        0 => C_GREEN_FAINT,
+        1 => Color::Rgb(40, 110, 70),
+        2 => Color::Rgb(60, 170, 100),
+        3 => Color::Rgb(90, 220, 130),
+        _ => Color::Rgb(140, 255, 170),
     }
 }
 
 fn global_legend() -> Line<'static> {
     Line::from(vec![
         Span::raw("    "),
-        Span::styled("Less ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Less ", Style::default().fg(C_TEXT_DIM)),
         Span::styled(CELL, Style::default().fg(global_palette(0))),
         Span::raw(" "),
         Span::styled(CELL, Style::default().fg(global_palette(1))),
@@ -1368,6 +1421,6 @@ fn global_legend() -> Line<'static> {
         Span::styled(CELL, Style::default().fg(global_palette(3))),
         Span::raw(" "),
         Span::styled(CELL, Style::default().fg(global_palette(4))),
-        Span::styled(" More", Style::default().fg(Color::DarkGray)),
+        Span::styled(" More", Style::default().fg(C_TEXT_DIM)),
     ])
 }
