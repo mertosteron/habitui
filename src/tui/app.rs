@@ -10,6 +10,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::data::{Frequency, HabitKind, HabitStore};
+use crate::storage;
 use crate::tui::events::next_key;
 use crate::tui::views;
 
@@ -329,6 +330,16 @@ impl App {
         self.store.habits.get(self.selected).map(|h| h.id)
     }
 
+    /// Write the store to disk after a mutation. On failure, replace any
+    /// success status with a visible error so the user knows the change
+    /// did not survive. We never propagate the error: the in-memory state
+    /// is still consistent and the next mutation will retry.
+    fn persist(&mut self) {
+        if let Err(e) = storage::save(&self.store) {
+            self.status = Some(format!("Save failed: {e}"));
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.should_quit = true;
@@ -363,8 +374,12 @@ impl App {
             }
             KeyCode::Char(' ') => {
                 if let Some(id) = self.current_habit_id() {
-                    if self.store.toggle_completion(id, self.today).is_none() {
-                        self.status = Some("Quit habit: press [f] to log a failure.".to_string());
+                    match self.store.toggle_completion(id, self.today) {
+                        None => {
+                            self.status =
+                                Some("Quit habit: press [f] to log a failure.".to_string());
+                        }
+                        Some(_) => self.persist(),
                     }
                 }
             }
@@ -380,6 +395,7 @@ impl App {
                                 let _ = self.store.log_failure(id, self.today);
                                 self.status = Some("Logged failure for today.".to_string());
                             }
+                            self.persist();
                         } else {
                             self.status = Some("[f] only applies to Quit habits.".to_string());
                         }
@@ -448,6 +464,7 @@ impl App {
                 self.store.add_habit_kind(name, freq, self.today, kind);
                 self.selected = self.store.habits.len().saturating_sub(1);
                 self.status = Some("Added habit.".to_string());
+                self.persist();
                 return Screen::List;
             }
             _ => match form.field {
@@ -518,6 +535,7 @@ impl App {
                 match self.store.edit_habit(form.habit_id, Some(name), Some(freq)) {
                     Ok(()) => {
                         self.status = Some("Saved changes.".to_string());
+                        self.persist();
                         return Screen::List;
                     }
                     Err(e) => {
@@ -627,7 +645,7 @@ impl App {
             return;
         }
         let kind_is_quit = matches!(habit.kind, HabitKind::Quit { .. });
-        if kind_is_quit {
+        let mutated = if kind_is_quit {
             let already = self.store.is_complete_on(habit_id, date);
             if already {
                 let _ = self.store.clear_failure(habit_id, date);
@@ -636,12 +654,22 @@ impl App {
                 let _ = self.store.log_failure(habit_id, date);
                 self.status = Some(format!("Logged failure on {}.", date));
             }
+            true
         } else {
             match self.store.toggle_completion(habit_id, date) {
-                Some(true) => self.status = Some(format!("Marked {} complete.", date)),
-                Some(false) => self.status = Some(format!("Cleared completion on {}.", date)),
-                None => {}
+                Some(true) => {
+                    self.status = Some(format!("Marked {} complete.", date));
+                    true
+                }
+                Some(false) => {
+                    self.status = Some(format!("Cleared completion on {}.", date));
+                    true
+                }
+                None => false,
             }
+        };
+        if mutated {
+            self.persist();
         }
     }
 
@@ -668,6 +696,7 @@ impl App {
                 if self.store.remove_habit(habit_id) {
                     self.clamp_selection();
                     self.status = Some("Deleted habit.".to_string());
+                    self.persist();
                 }
                 Screen::List
             }

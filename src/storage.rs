@@ -7,10 +7,20 @@ use crate::data::{HabitStore, STORE_VERSION};
 const APP_DIR: &str = "habitui";
 const FILE_NAME: &str = "habits.json";
 
-/// Default on-disk location: `<dirs::data_dir()>/habitui/habits.json`.
-/// On Linux this honors `XDG_DATA_HOME` (falling back to `~/.local/share`).
+/// Default on-disk location, chosen per OS:
+/// - Linux: `$XDG_DATA_HOME/habitui/habits.json` (or `~/.local/share/habitui/habits.json`).
+/// - macOS: `~/Library/Application Support/habitui/habits.json`.
+/// - Windows: `%APPDATA%\habitui\habits.json`.
+///
+/// If the platform data dir cannot be resolved, fall back to `~/.habitui/habits.json`
+/// so the path stays stable across working directories. As a last resort use the
+/// system temp dir — never the current working directory, which would silently
+/// fragment state across launch locations.
 pub fn data_path() -> PathBuf {
-    let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    let base = dirs::data_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))
+        .or_else(|| dirs::home_dir())
+        .unwrap_or_else(std::env::temp_dir);
     base.join(APP_DIR).join(FILE_NAME)
 }
 
