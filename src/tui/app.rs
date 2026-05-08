@@ -613,19 +613,19 @@ impl App {
                     state.edit_mode = false;
                 }
                 KeyCode::Left | KeyCode::Char('h') => {
-                    state.cursor = state.cursor - Duration::days(1);
+                    state.cursor = state.cursor - Duration::days(7);
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
-                    let next = state.cursor + Duration::days(1);
+                    let next = state.cursor + Duration::days(7);
                     if next <= self.today {
                         state.cursor = next;
                     }
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    state.cursor = state.cursor - Duration::days(7);
+                    state.cursor = state.cursor - Duration::days(1);
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    let next = state.cursor + Duration::days(7);
+                    let next = state.cursor + Duration::days(1);
                     if next <= self.today {
                         state.cursor = next;
                     }
