@@ -1,6 +1,5 @@
-<img width="1845" height="978" alt="habitui_image1" src="https://github.com/user-attachments/assets/879a3e83-1674-443f-aed3-657d85fbdcef" />
-<img width="1864" height="975" alt="habitui_image2" src="https://github.com/user-attachments/assets/ef6d13a4-5b26-42c0-9d92-2fb8f48286e4" />
-<img width="1864" height="979" alt="habitui_image3" src="https://github.com/user-attachments/assets/17c77b89-3d57-4e95-b3b3-2b4201168c5e" />
+<img width="920" height="490" alt="habitui_image1" src="https://github.com/user-attachments/assets/879a3e83-1674-443f-aed3-657d85fbdcef" />
+
 # Habitui
 
 A fast, minimalist, and fully keyboard-driven habit tracker for your terminal, written in Rust.
