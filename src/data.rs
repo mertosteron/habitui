@@ -323,7 +323,7 @@ impl Habit {
         }
     }
 
-    /// Current streak ending at `today`.
+    /// Current streak ending at `today`, expressed in **calendar days**.
     ///
     /// - Quit: number of consecutive abstinence days ending today. Equals
     ///   `(today - anchor).num_days() + 1`, where `anchor` is the day after
@@ -331,13 +331,14 @@ impl Habit {
     ///   there are no such failures). On the day of a failure the streak is
     ///   0; the next day it is 1. Before `created_at` it is 0.
     /// - Build / Daily: consecutive completed days ending today.
-    /// - Build / EveryNDays(n): consecutive rolling n-day windows
-    ///   ending today, today-n, today-2n, ... that each contain ≥1 completion.
-    /// - Build / NTimesPerWeek(n): consecutive past ISO weeks (each with ≥n
-    ///   completions) ending at the current ISO week, plus 1 if the current
-    ///   ISO week already has ≥n completions. The current week does not break
-    ///   the streak just because it is mid-week — it simply doesn't count
-    ///   toward the streak until n is reached.
+    /// - Build / EveryNDays(n): each rolling n-day window containing ≥1
+    ///   completion contributes `n` calendar days. The current window does
+    ///   not break the streak if not yet hit; it simply contributes 0 days
+    ///   until a completion lands inside it.
+    /// - Build / NTimesPerWeek(n): each past ISO week with ≥n completions
+    ///   contributes 7 calendar days. The current ISO week contributes 7
+    ///   once it reaches the quota; until then it contributes 0 but does
+    ///   not break the streak.
     pub fn current_streak(&self, today: NaiveDate) -> u32 {
         if let HabitKind::Quit { failures } = &self.kind {
             if today < self.created_at {
@@ -364,17 +365,24 @@ impl Habit {
             return 0;
         }
         let period = self.period_days() as i64;
+        let credit = period as u32;
         let mut streak = 0u32;
-        let mut window_end = today;
         let today_window_start = today - Duration::days(period - 1);
         let today_hit = self
             .completions
             .range(today_window_start..=today)
             .next()
             .is_some();
-        if !today_hit {
-            window_end = today - Duration::days(1);
-        }
+        let mut window_end = if today_hit {
+            // Current rolling window already met → credit a full period
+            // and continue walking from the day before that window.
+            streak = streak.saturating_add(credit);
+            today_window_start - Duration::days(1)
+        } else {
+            // Current window not yet met. Don't break — fall back to the
+            // last fully-elapsed period ending yesterday (1-day grace).
+            today - Duration::days(1)
+        };
         loop {
             let window_start = window_end - Duration::days(period - 1);
             let hit = self
@@ -385,7 +393,7 @@ impl Habit {
             if !hit {
                 break;
             }
-            streak = streak.saturating_add(1);
+            streak = streak.saturating_add(credit);
             window_end = window_start - Duration::days(1);
         }
         streak
@@ -396,13 +404,14 @@ impl Habit {
             return 0;
         }
         let n = n as usize;
+        let credit: u32 = 7;
         let mut streak = 0u32;
         let mut monday = iso_week_start(today);
 
         let sunday = monday + Duration::days(6);
         let count = self.completions.range(monday..=sunday).count();
         if count >= n {
-            streak = streak.saturating_add(1);
+            streak = streak.saturating_add(credit);
         }
 
         monday -= Duration::days(7);
@@ -412,29 +421,21 @@ impl Habit {
             if count < n {
                 break;
             }
-            streak = streak.saturating_add(1);
+            streak = streak.saturating_add(credit);
             monday -= Duration::days(7);
         }
         streak
     }
 
-    /// Longest run of consecutive periods (anywhere in history) that each
-    /// contain at least one completion (or, for Quit, the longest abstinence
-    /// run between failures).
+    /// Longest run of consecutive periods (anywhere in history), expressed
+    /// in **calendar days** for consistency with `current_streak`.
     ///
     /// - Build / Daily: longest run of consecutive completed days.
-    /// - Build / EveryNDays(n): periods are anchored to the earliest
-    ///   completion (period_0 = [first, first + n - 1]); a hit period has
-    ///   ≥1 completion. Result is the longest run of consecutive hit periods.
-    /// - Build / NTimesPerWeek(n): longest run of consecutive ISO weeks
-    ///   (between the first and last completion) that each have ≥n completions.
-    /// - Quit: longest abstinence span. Spans are
-    ///   `[created_at .. first_failure - 1]`,
-    ///   `[failure_i + 1 .. failure_{i+1} - 1]`, and
-    ///   `[last_failure + 1 .. today_or_anywhere]`. Without a `today`
-    ///   reference, the trailing open span is bounded by the latest known
-    ///   date (last failure or created_at). For an ongoing streak that
-    ///   exceeds the historical best, callers should use `current_streak`.
+    /// - Build / EveryNDays(n): each consecutive hit period contributes `n`
+    ///   days; the result is the best such run.
+    /// - Build / NTimesPerWeek(n): each consecutive ISO week with ≥n
+    ///   completions contributes 7 days.
+    /// - Quit: longest abstinence span (in days).
     pub fn longest_streak(&self) -> u32 {
         if let HabitKind::Quit { failures } = &self.kind {
             return self.quit_longest_streak(failures);
@@ -448,6 +449,7 @@ impl Habit {
             return 0;
         }
         let period = self.period_days() as i64;
+        let credit = period as u32;
         let first = *self.completions.iter().next().unwrap();
         let last = *self.completions.iter().next_back().unwrap();
 
@@ -462,7 +464,7 @@ impl Habit {
                 .next()
                 .is_some();
             if hit {
-                current = current.saturating_add(1);
+                current = current.saturating_add(credit);
                 if current > best {
                     best = current;
                 }
@@ -479,6 +481,7 @@ impl Habit {
             return 0;
         }
         let n = n as usize;
+        let credit: u32 = 7;
         let first = *self.completions.iter().next().unwrap();
         let last = *self.completions.iter().next_back().unwrap();
         let mut monday = iso_week_start(first);
@@ -490,7 +493,7 @@ impl Habit {
             let sunday = monday + Duration::days(6);
             let count = self.completions.range(monday..=sunday).count();
             if count >= n {
-                current = current.saturating_add(1);
+                current = current.saturating_add(credit);
                 if current > best {
                     best = current;
                 }

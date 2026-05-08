@@ -9,12 +9,13 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+use crate::config::{self, Config, Theme};
 use crate::data::{Frequency, HabitKind, HabitStore};
 use crate::storage;
 use crate::tui::events::next_key;
 use crate::tui::views;
 
-const MIN_WIDTH: u16 = 80;
+const MIN_WIDTH: u16 = 100;
 const MIN_HEIGHT: u16 = 24;
 
 pub enum Screen {
@@ -283,10 +284,15 @@ pub struct App {
     pub year: i32,
     pub should_quit: bool,
     pub status: Option<String>,
+    pub theme: Theme,
 }
 
 impl App {
     pub fn new(store: HabitStore) -> Self {
+        Self::with_theme(store, Theme::default())
+    }
+
+    pub fn with_theme(store: HabitStore, theme: Theme) -> Self {
         let today = Local::now().date_naive();
         Self {
             store,
@@ -296,6 +302,7 @@ impl App {
             today,
             should_quit: false,
             status: None,
+            theme,
         }
     }
 
@@ -338,6 +345,21 @@ impl App {
         if let Err(e) = storage::save(&self.store) {
             self.status = Some(format!("Save failed: {e}"));
         }
+    }
+
+    /// Persist the current theme to the config file. Same failure semantics
+    /// as `persist`: we surface the error in the status line and keep going.
+    fn persist_config(&mut self) {
+        let cfg = Config { theme: self.theme };
+        if let Err(e) = config::save(&cfg) {
+            self.status = Some(format!("Theme save failed: {e}"));
+        }
+    }
+
+    fn cycle_theme(&mut self) {
+        self.theme = self.theme.next();
+        self.status = Some(format!("Theme: {}", self.theme.label()));
+        self.persist_config();
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -426,6 +448,9 @@ impl App {
             }
             KeyCode::Char('g') | KeyCode::Char('G') => {
                 return Screen::GlobalHeatmap;
+            }
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                self.cycle_theme();
             }
             KeyCode::Char('[') => {
                 self.change_year(-1);
@@ -746,13 +771,18 @@ fn install_panic_hook() {
 }
 
 pub fn run_app(store: &mut HabitStore) -> io::Result<()> {
+    let cfg = config::load();
+    run_app_with_theme(store, cfg.theme)
+}
+
+pub fn run_app_with_theme(store: &mut HabitStore, theme: Theme) -> io::Result<()> {
     install_panic_hook();
     let _guard = TerminalGuard::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal: Terminal<CrosstermBackend<Stdout>> = Terminal::new(backend)?;
 
     let owned_store = std::mem::replace(store, HabitStore::new());
-    let mut app = App::new(owned_store);
+    let mut app = App::with_theme(owned_store, theme);
 
     let result = event_loop(&mut terminal, &mut app);
 
