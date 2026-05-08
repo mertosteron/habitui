@@ -2,6 +2,14 @@
 name = "habitui"
 version = "0.1.0"
 edition = "2021"
+description = "A fast, minimalist, keyboard-driven habit tracker for the terminal."
+license = "MIT"
+repository = "https://github.com/mertosteron/habitui"
+homepage = "https://github.com/mertosteron/habitui"
+readme = "README.md"
+keywords = ["habit-tracker", "tui", "terminal", "ratatui", "productivity"]
+categories = ["command-line-utilities"]
+authors = ["mertosteron"]
 
 [lib]
 name = "habitui"
@@ -21,3 +29,8 @@ crossterm = "0.28"
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

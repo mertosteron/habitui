@@ -1,50 +1,132 @@
 # Habitui
 
-A fast, minimalist, and fully keyboard-driven habit tracker for your terminal, written in Rust. 
+A fast, minimalist, and fully keyboard-driven habit tracker for your terminal, written in Rust.
 
-Whether you are trying to build a new positive routine or break an old bad habit, Habitui helps you stay on track. Watch your streaks grow and stay motivated with satisfying, terminal-native visual graphs.
+Build positive routines or quit bad ones. Watch your streaks grow with circle-based progress strips, color-graded streak milestones, and a satisfying terminal-native UI.
 
 ## Features
 
-- **Minimalist & Fast:** Built with Rust for peak performance and zero bloat.
-- **100% Keyboard Controlled:** Navigate and manage everything without ever touching your mouse.
-- **Build & Break:** Designed flexibly to track goals for both creating good habits and quitting bad ones.
-- **Streak Tracking:** Keep the momentum going. The longer you stick to it, the higher your streak.
-- **Visual Graphs:** Satisfying and clean charts rendered directly in your terminal to visualize your progress.
+- **Minimalist & fast** — written in Rust, zero bloat, instant launch.
+- **100% keyboard controlled** — never touch your mouse.
+- **Build & quit habits** — track goals to start, or to stop.
+- **Flexible frequencies** — daily, every-N-days, or N-times-per-week. Streaks count calendar days; missing a quota period only breaks the streak when the period ends.
+- **Streak milestones** — the streak number changes color as it climbs (week, month, quarter, year).
+- **Themes** — cycle through Green / Blue / Red / Yellow palettes with `C`. Your choice persists.
+- **Visual graphs** — 30-day progress strip, year activity row, week-by-week binary calendar, global heatmap.
 
-## Installation
+## Install
 
-Make sure you have [Rust and Cargo](https://rustup.rs/) installed.
+You need [Rust + Cargo](https://rustup.rs/).
+
+### Quick install (recommended for end users)
 
 ```bash
-git clone [https://github.com/yourusername/habitui.git](https://github.com/yourusername/habitui.git)
+cargo install --git https://github.com/mertosteron/habitui
+```
+
+This builds and drops a `habitui` binary into `~/.cargo/bin/`. Make sure that directory is on your `$PATH` (Cargo's installer normally handles this).
+
+### From a local clone
+
+```bash
+git clone https://github.com/mertosteron/habitui
 cd habitui
-cargo build --release
-You can find the compiled binary in target/release/. Optionally, move it to your local bin directory:
+cargo install --path .
 ```
 
+### Build only (no install)
+
 ```bash
-mv target/release/habitui ~/.local/bin/
-Usage
-Simply run the application from your terminal:
+cargo build --release
+./target/release/habitui
 ```
+
+## Usage
 
 ```bash
 habitui
-Default Keybindings
-↑ / ↓ or k / j: Navigate through your habits
-
-Space: Mark a habit as done/failed for the day
-
-a: Add a new habit
-
-d: Delete the selected habit
-
-q / Esc: Quit the application
 ```
 
-Contributing
-Contributions, issues, and feature requests are welcome! Feel free to check the issues page.
+Your data lives at:
 
-License
-This project is licensed under the MIT License - see the LICENSE file for details.
+| OS      | Path                                                  |
+| ------- | ----------------------------------------------------- |
+| Linux   | `~/.local/share/habitui/{habits,config}.json`         |
+| macOS   | `~/Library/Application Support/habitui/`              |
+| Windows | `%APPDATA%\habitui\`                                  |
+
+## Keybindings
+
+### List screen
+| Key             | Action                                  |
+| --------------- | --------------------------------------- |
+| `↑ ↓` or `k j`  | Navigate habits                          |
+| `Space`         | Toggle today's completion (Build habit) |
+| `F`             | Log/clear today's failure (Quit habit)  |
+| `Enter`         | Open habit detail view                  |
+| `A`             | Add a new habit                         |
+| `E`             | Edit the selected habit                 |
+| `D`             | Delete the selected habit               |
+| `G`             | Open the global heatmap                 |
+| `C`             | Cycle theme (Green → Blue → Red → Yellow) |
+| `[` / `]`       | Previous / next year                    |
+| `Q` / `Esc`     | Quit                                    |
+
+### Detail view
+| Key            | Action                              |
+| -------------- | ----------------------------------- |
+| `E`            | Enter / exit edit mode              |
+| `← → ↑ ↓` (in edit mode) | Move the calendar cursor   |
+| `Space`        | Toggle completion on cursor day     |
+| `[` / `]`      | Previous / next year                |
+| `Esc` / `Q` / `Enter` | Back to list                  |
+
+## Development
+
+If you're hacking on the code and want `habitui` on your `$PATH` to always reflect your local edits, install the dev shim once:
+
+```bash
+./scripts/dev-link.sh
+```
+
+This drops a shell wrapper at `~/.cargo/bin/habitui` that runs `cargo run --release` against your source. Every edit → next launch rebuilds incrementally and runs the fresh binary. To go back to a static binary:
+
+```bash
+rm ~/.cargo/bin/habitui
+cargo install --path .
+```
+
+### Running tests
+
+```bash
+cargo test
+```
+
+## Project layout
+
+```
+habitui/
+├── Cargo.toml
+├── src/
+│   ├── main.rs        # entry point
+│   ├── lib.rs         # public re-exports
+│   ├── data.rs        # Habit, HabitStore, streak math
+│   ├── storage.rs     # atomic load/save of habits.json
+│   ├── config.rs      # Theme + persistent config.json
+│   └── tui/
+│       ├── mod.rs
+│       ├── app.rs     # App state, key handling, event loop
+│       ├── events.rs  # crossterm key polling
+│       └── views.rs   # all rendering (list, detail, forms, global)
+├── tests/             # integration tests for data + storage
+└── scripts/
+    └── dev-link.sh    # install local dev shim onto PATH
+```
+
+## Contributing
+
+Issues and PRs welcome. Open an issue first if you want to discuss a larger change.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
