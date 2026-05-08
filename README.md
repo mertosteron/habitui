@@ -1,10 +1,10 @@
-<img width="920" height="490" alt="habitui_image1" src="https://github.com/user-attachments/assets/879a3e83-1674-443f-aed3-657d85fbdcef" />
-
 # Habitui
 
 A fast, minimalist, and fully keyboard-driven habit tracker for your terminal, written in Rust.
 
 Build positive routines or quit bad ones. Watch your streaks grow with circle-based progress strips, color-graded streak milestones, and a satisfying terminal-native UI.
+
+<img width="920" height="490" alt="habitui_image1" src="https://github.com/user-attachments/assets/879a3e83-1674-443f-aed3-657d85fbdcef" />
 
 ## Features
 
