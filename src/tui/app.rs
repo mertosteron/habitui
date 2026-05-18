@@ -25,6 +25,10 @@ pub enum Screen {
     Detail(DetailState),
     GlobalHeatmap,
     ConfirmDelete { habit_id: u64 },
+    /// Confirmation popup shown when the user attempts to toggle a *past* day
+    /// from the detail-view edit mode. The held `DetailState` is restored
+    /// (with cursor + edit_mode intact) regardless of Y/N choice.
+    ConfirmPastEdit(DetailState),
 }
 
 /// Per-habit detail-view state. `edit_mode` toggles the inline cell editor;
@@ -378,6 +382,7 @@ impl App {
             Screen::Detail(state) => self.handle_detail_key(key, state),
             Screen::GlobalHeatmap => self.handle_global_heatmap_key(key),
             Screen::ConfirmDelete { habit_id } => self.handle_confirm_key(key, habit_id),
+            Screen::ConfirmPastEdit(state) => self.handle_confirm_past_edit_key(key, state),
         };
     }
 
@@ -631,6 +636,9 @@ impl App {
                     }
                 }
                 KeyCode::Char(' ') | KeyCode::Enter => {
+                    if state.cursor < self.today {
+                        return Screen::ConfirmPastEdit(state);
+                    }
                     self.toggle_on_date(habit_id, state.cursor);
                 }
                 _ => {}
@@ -727,6 +735,17 @@ impl App {
             }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Screen::List,
             _ => Screen::ConfirmDelete { habit_id },
+        }
+    }
+
+    fn handle_confirm_past_edit_key(&mut self, key: KeyEvent, state: DetailState) -> Screen {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.toggle_on_date(state.habit_id, state.cursor);
+                Screen::Detail(state)
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Screen::Detail(state),
+            _ => Screen::ConfirmPastEdit(state),
         }
     }
 }

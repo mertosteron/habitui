@@ -48,6 +48,10 @@ pub struct Palette {
     pub level_2: Color,
     pub level_3: Color,
     pub level_4: Color,
+    /// Color for failure markers on Quit habits. Picked per-theme so it does
+    /// not collide with the primary palette (e.g. on Red theme, fails would
+    /// otherwise look identical to streak/clean days).
+    pub fail: Color,
 }
 
 pub fn palette_for(theme: Theme) -> Palette {
@@ -64,6 +68,7 @@ pub fn palette_for(theme: Theme) -> Palette {
             level_2: Color::Rgb(60, 170, 100),
             level_3: Color::Rgb(90, 220, 130),
             level_4: Color::Rgb(140, 255, 170),
+            fail: Color::Rgb(230, 95, 95),
         },
         Theme::Blue => Palette {
             primary: Color::Rgb(90, 175, 250),
@@ -77,6 +82,7 @@ pub fn palette_for(theme: Theme) -> Palette {
             level_2: Color::Rgb(70, 140, 200),
             level_3: Color::Rgb(110, 185, 240),
             level_4: Color::Rgb(170, 225, 255),
+            fail: Color::Rgb(230, 95, 95),
         },
         Theme::Red => Palette {
             primary: Color::Rgb(245, 110, 110),
@@ -90,6 +96,8 @@ pub fn palette_for(theme: Theme) -> Palette {
             level_2: Color::Rgb(195, 90, 90),
             level_3: Color::Rgb(240, 130, 120),
             level_4: Color::Rgb(255, 180, 165),
+            // Magenta — distinct from every red in the rest of this palette.
+            fail: Color::Rgb(225, 80, 200),
         },
         Theme::Yellow => Palette {
             primary: Color::Rgb(245, 215, 90),
@@ -103,6 +111,7 @@ pub fn palette_for(theme: Theme) -> Palette {
             level_2: Color::Rgb(195, 165, 65),
             level_3: Color::Rgb(240, 210, 100),
             level_4: Color::Rgb(255, 235, 165),
+            fail: Color::Rgb(230, 95, 95),
         },
     }
 }
@@ -144,6 +153,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
             let id = *habit_id;
             render_list(f, &palette, app);
             render_confirm_delete(f, &palette, app, id);
+        }
+        Screen::ConfirmPastEdit(state) => {
+            render_detail(f, &palette, app, state);
+            render_confirm_past_edit(f, &palette, app, state);
         }
     }
 }
@@ -341,7 +354,7 @@ fn progress_bar_spans(p: &Palette, h: &Habit, today: NaiveDate, days: usize) -> 
                 }
                 HabitKind::Quit { failures } => {
                     if failures.contains(&d) {
-                        Span::styled(DOT_DONE, Style::default().fg(C_RED).add_modifier(Modifier::BOLD))
+                        Span::styled(DOT_DONE, Style::default().fg(p.fail).add_modifier(Modifier::BOLD))
                     } else {
                         Span::styled(DOT_DONE, Style::default().fg(p.primary).add_modifier(Modifier::BOLD))
                     }
@@ -839,6 +852,56 @@ fn render_confirm_delete(f: &mut Frame, p: &Palette, app: &App, habit_id: u64) {
     f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
 }
 
+// ---------- Confirm past-day edit ----------
+
+fn render_confirm_past_edit(f: &mut Frame, p: &Palette, app: &App, state: &DetailState) {
+    let habit_name = app
+        .store
+        .habit(state.habit_id)
+        .map(|h| h.name.clone())
+        .unwrap_or_else(|| "<missing>".to_string());
+
+    let area = centered_rect(60, 7, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(C_AMBER))
+        .title(Span::styled(
+            " CONFIRM PAST-DAY EDIT ",
+            Style::default().fg(C_AMBER).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Edit \"", Style::default().fg(p.text)),
+            Span::styled(habit_name, Style::default().fg(p.primary).add_modifier(Modifier::BOLD)),
+            Span::styled("\" on ", Style::default().fg(p.text)),
+            Span::styled(
+                state.cursor.format("%a %Y-%m-%d").to_string(),
+                Style::default().fg(C_AMBER).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" ?", Style::default().fg(p.text)),
+        ]),
+        Line::from(Span::styled(
+            "Changing a past day rewrites history.",
+            Style::default().fg(p.text_dim),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[Y] ", Style::default().fg(C_AMBER).add_modifier(Modifier::BOLD)),
+            Span::styled("yes  ", Style::default().fg(p.text)),
+            Span::styled("[N] ", Style::default().fg(p.primary).add_modifier(Modifier::BOLD)),
+            Span::styled("no", Style::default().fg(p.text)),
+        ]),
+    ];
+    f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
+}
+
 // ---------- Detail ----------
 
 fn render_detail(f: &mut Frame, p: &Palette, app: &App, state: &DetailState) {
@@ -989,7 +1052,7 @@ fn activity_circle(p: &Palette, habit: &Habit, date: NaiveDate, is_quit: bool) -
     };
     if is_quit {
         if hit {
-            Span::styled(DOT_DONE, Style::default().fg(C_RED).add_modifier(Modifier::BOLD))
+            Span::styled(DOT_DONE, Style::default().fg(p.fail).add_modifier(Modifier::BOLD))
         } else {
             Span::styled(DOT_DONE, Style::default().fg(p.primary).add_modifier(Modifier::BOLD))
         }
@@ -1109,7 +1172,7 @@ fn binary_cell(
 
     let (glyph, color) = if is_quit {
         if hit {
-            (cell_half, C_RED)
+            (cell_half, p.fail)
         } else {
             (cell, p.primary_dim)
         }
@@ -1137,7 +1200,7 @@ fn binary_legend(p: &Palette, is_quit: bool) -> Line<'static> {
             Span::styled("Legend: ", Style::default().fg(p.text_dim)),
             Span::styled(cell, Style::default().fg(p.primary_dim)),
             Span::styled(" clean   ", Style::default().fg(p.text_dim)),
-            Span::styled(cell_half, Style::default().fg(C_RED)),
+            Span::styled(cell_half, Style::default().fg(p.fail)),
             Span::styled(" failure   ", Style::default().fg(p.text_dim)),
             Span::styled(cell, Style::default().fg(p.primary_faint)),
             Span::styled(" before created", Style::default().fg(p.text_dim)),
